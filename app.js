@@ -2,7 +2,7 @@
 /* Site Walk — offline site survey app.
    Everything is stored on the device in IndexedDB. No server, no account. */
 
-const APP_VERSION = '1.4.2';
+const APP_VERSION = '1.5.0';
 /* Report header/footer text. Set `site` to a web address to show it in the footer. */
 const BRAND = { name: 'Site Walk', tagline: 'Survey report', site: '' };
 
@@ -745,28 +745,57 @@ async function reportImage(id, max, drawPins) {
     return { data: c.toDataURL('image/jpeg', 0.8), w: c.width, h: c.height };
   } finally { URL.revokeObjectURL(u); }
 }
+/* Draw one numbered pin whose tip sits at (px, py). */
+function drawPin(ctx, px, py, r, p, alpha = 1) {
+  ctx.save(); ctx.globalAlpha = alpha;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = `bold ${Math.round(r * 1.05)}px Arial, Helvetica, sans-serif`;
+  const y = py - r * 1.4;
+  ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(2, r * 0.18);
+  ctx.beginPath(); ctx.moveTo(px, y + r); ctx.lineTo(px, py); ctx.stroke();
+  ctx.beginPath(); ctx.arc(px, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = p.issue ? '#E5372B' : '#C6F432'; ctx.fill();
+  ctx.lineWidth = Math.max(2, r * 0.2); ctx.strokeStyle = '#14181B'; ctx.stroke();
+  ctx.fillStyle = p.issue ? '#fff' : '#000'; ctx.fillText(String(p.n), px, y + r * 0.05);
+  ctx.restore();
+}
 function pinPainter(stops) {
   return (ctx, w, h) => {
     const r = Math.max(14, Math.max(w, h) * 0.016);
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = `bold ${Math.round(r * 1.05)}px Arial, Helvetica, sans-serif`;
-    for (const p of stops) {
-      if (p.x == null) continue;
-      const x = p.x * w, y = p.y * h - r * 1.4;
-      ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(2, r * 0.18);
-      ctx.beginPath(); ctx.moveTo(x, y + r); ctx.lineTo(x, p.y * h); ctx.stroke();
-      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fillStyle = p.issue ? '#E5372B' : '#C6F432'; ctx.fill();
-      ctx.lineWidth = Math.max(2, r * 0.2); ctx.strokeStyle = '#14181B'; ctx.stroke();
-      ctx.fillStyle = p.issue ? '#fff' : '#000'; ctx.fillText(String(p.n), x, y + r * 0.05);
-    }
+    for (const p of stops) if (p.x != null) drawPin(ctx, p.x * w, p.y * h, r, p);
   };
 }
+/* Fraction of the sheet's longer side shown in each stop's plan close-up. */
+const SNIP_FRACTION = 0.28;
 
 async function buildReport(progress) {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: 'pt', format: 'letter', compress: true });
   const W = 612, H = 792, M = 54, CW = W - 2 * M, CT = 64, BOTTOM = H - 58;
+  /* Close-up of the plan around one stop's pin, cut from the full-resolution sheet. */
+  const sheetImgs = new Map();
+  const planSnip = async (sh, p, onSheet) => {
+    if (!sheetImgs.has(sh.id)) sheetImgs.set(sh.id, await loadImg(await blobURL(sh.mapId)));
+    const im = sheetImgs.get(sh.id), IW = im.naturalWidth, IH = im.naturalHeight;
+    let cw = Math.round(Math.max(IW, IH) * SNIP_FRACTION), ch = Math.round(cw * 0.75);
+    cw = Math.min(cw, IW); ch = Math.min(ch, IH);
+    const sx = Math.max(0, Math.min(IW - cw, Math.round(p.x * IW - cw / 2)));
+    const sy = Math.max(0, Math.min(IH - ch, Math.round(p.y * IH - ch / 2)));
+    const outW = 800, outH = Math.round(800 * ch / cw), k = outW / cw;
+    const c = document.createElement('canvas'); c.width = outW; c.height = outH;
+    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, outW, outH);
+    ctx.drawImage(im, sx, sy, cw, ch, 0, 0, outW, outH);
+    for (const q of onSheet) {
+      if (q.id === p.id) continue;
+      const qx = (q.x * IW - sx) * k, qy = (q.y * IH - sy) * k;
+      if (qx > -40 && qy > -10 && qx < outW + 40 && qy < outH + 60) drawPin(ctx, qx, qy, 24, q, 0.5);
+    }
+    const px = (p.x * IW - sx) * k, py = (p.y * IH - sy) * k;
+    ctx.save(); ctx.strokeStyle = p.issue ? '#E5372B' : '#14181B'; ctx.lineWidth = 7; ctx.setLineDash([18, 12]);
+    ctx.beginPath(); ctx.arc(px, py - 30, 92, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+    drawPin(ctx, px, py, 36, p);
+    return { data: c.toDataURL('image/jpeg', 0.82), w: outW, h: outH };
+  };
   const ACCENT = [198, 244, 50], BLACK = [20, 24, 27], MID = [89, 94, 98], DIV = [204, 208, 210], LO = [246, 251, 226], RED = [211, 47, 47], RED_SOFT = [253, 236, 234];
   const s = S.cur, stops = [...S.stops].sort((a, b) => a.n - b.n);
   const totalPhotos = stops.reduce((a, p) => a + (p.photos?.length || 0), 0);
@@ -900,7 +929,10 @@ async function buildReport(progress) {
   sectionHead('Stop details');
   let done = 0;
   for (const p of stops) {
-    ensure(70);
+    const shp = p.x != null ? sheets.find(x => x.id === p.sheetId) : null;
+    let snip = null;
+    if (shp) { progress(`Adding plan detail for stop ${p.n}…`); try { snip = await planSnip(shp, p, stops.filter(q => q.sheetId === shp.id && q.x != null)); } catch (_) {} }
+    ensure(snip ? 54 + 210 * snip.h / snip.w + 18 : 70);
     doc.setFillColor(...(p.issue ? RED_SOFT : LO)); doc.rect(M, y, CW, 28, 'F');
     doc.setDrawColor(...(p.issue ? RED : BLACK)); doc.setLineWidth(p.issue ? 2.5 : 1.5); doc.line(M, y, M + CW, y);
     doc.setFont('helvetica', 'bold'); doc.setFontSize(11.5); doc.setTextColor(...BLACK);
@@ -919,7 +951,26 @@ async function buildReport(progress) {
     if (multi && sheetName(p.sheetId)) sub.push('Sheet: ' + sheetName(p.sheetId));
     if (sheets.length && p.x == null) sub.push('not pinned on plan');
     doc.text(sub.join('  ·  '), M, y); y += 16;
-    if (p.note) {
+    if (snip) {
+      // Plan close-up on the left, notes beside it
+      const sw = 210, sh2 = sw * snip.h / snip.w;
+      ensure(sh2 + 18);
+      const top = y;
+      doc.addImage(snip.data, 'JPEG', M, top, sw, sh2, undefined, 'FAST');
+      doc.setDrawColor(...DIV); doc.setLineWidth(0.75); doc.rect(M, top, sw, sh2);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(...MID);
+      doc.text('Plan detail' + (multi ? ' — ' + shp.name : ''), M, top + sh2 + 10);
+      const nx = M + sw + 14, nw = CW - sw - 14;
+      let ny = top, broke = false;
+      if (p.note) {
+        doc.setFontSize(10.5); doc.setTextColor(...BLACK);
+        for (const line of doc.splitTextToSize(p.note, nw)) {
+          if (ny + 15 > BOTTOM) { doc.addPage(); ny = CT; broke = true; }
+          doc.text(line, broke ? M : nx, ny + 10); ny += 14.5;
+        }
+      }
+      y = (broke ? ny : Math.max(top + sh2 + 14, ny)) + 12;
+    } else if (p.note) {
       doc.setFont('helvetica', 'normal'); doc.setFontSize(10.5); doc.setTextColor(...BLACK);
       for (const line of doc.splitTextToSize(p.note, CW)) { ensure(15); doc.text(line, M, y + 4); y += 14.5; }
       y += 8;
