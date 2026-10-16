@@ -2,7 +2,7 @@
 /* Site Walk — offline site survey app.
    Everything is stored on the device in IndexedDB. No server, no account. */
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.2';
 /* Report header/footer text. Set `site` to a web address to show it in the footer. */
 const BRAND = { name: 'Site Walk', tagline: 'Survey report', site: '' };
 
@@ -159,7 +159,7 @@ $('newForm').addEventListener('submit', async (e) => {
   const surveyor = $('nsSurveyor').value.trim(); ls.set('surveyor', surveyor);
   const now = new Date().toISOString();
   const noMap = $('nsModeNoPlan').checked;
-  const s = { id: uid(), name, surveyor, createdAt: now, updatedAt: now, mapId: null, mapW: 0, mapH: 0, noMap, gps: true };
+  const s = { id: uid(), name, surveyor, createdAt: now, updatedAt: now, mapId: null, mapW: 0, mapH: 0, sheets: [], sheetId: null, noMap, gps: true };
   try { await idb.put('surveys', s); } catch (err) { return toast(storageMsg(err)); }
   $('newForm').hidden = true; $('nsName').value = ''; $('nsModePlan').checked = true;
   openSurvey(s.id);
@@ -173,9 +173,32 @@ async function openSurvey(id) {
   S.stops = (await idb.byIndex('stops', 'surveyId', id)).sort((a, b) => a.n - b.n);
   S.selId = null; S.armed = false; S.zoom = 1;
   const z = [...S.stops].reverse().find(p => p.zone); S.lastZone = z ? z.zone : '';
-  $('mapPanel').dataset.mode = ''; $('settings').open = false;
+  migrateSheets();
+  $('mapPanel').dataset.mode = ''; $('settings').open = false; S.fileMode = 'add'; S.sheetKey = '';
   show('survey'); renderSurvey(true);
 }
+/* ---- plan sheets: a survey can hold several plan sheets; each pin belongs to one ---- */
+function curSheet() { const s = S.cur; return s?.sheets?.find(x => x.id === s.sheetId) || null; }
+function sheetById(id) { return S.cur?.sheets?.find(x => x.id === id) || null; }
+function syncSheet() { const sh = curSheet(); S.cur.mapId = sh ? sh.mapId : null; S.cur.mapW = sh?.w || 0; S.cur.mapH = sh?.h || 0; }
+function migrateSheets() {
+  const s = S.cur; let changed = false;
+  if (!Array.isArray(s.sheets)) {
+    s.sheets = s.mapId ? [{ id: uid(), name: 'Sheet 1', mapId: s.mapId, w: s.mapW || 0, h: s.mapH || 0 }] : [];
+    s.sheetId = s.sheets[0]?.id || null; changed = true;
+  }
+  if (s.sheets.length && !sheetById(s.sheetId)) { s.sheetId = s.sheets[0].id; changed = true; }
+  syncSheet();
+  const first = s.sheets[0]?.id;
+  for (const p of S.stops) if (p.x != null && !p.sheetId && first) { p.sheetId = first; idb.put('stops', JSON.parse(JSON.stringify(p))).catch(() => {}); }
+  if (changed) touch();
+}
+function switchSheet(id) {
+  if (!S.cur || S.cur.sheetId === id || !sheetById(id)) return;
+  S.cur.sheetId = id; syncSheet(); S.zoom = 1; touch(); renderSurvey();
+  const sc = $('mapScroll'); if (sc) { sc.scrollLeft = 0; sc.scrollTop = 0; }
+}
+
 async function showList() { flushSaves(); closeSheet(); clearURLs(); S.cur = null; $('surveyView').classList.remove('split'); document.body.classList.remove('split-on'); show('list'); renderList(); }
 $('backBtn').onclick = showList;
 
@@ -213,11 +236,11 @@ function renderMap() {
     if (P.dataset.mode !== 'empty') {
       P.dataset.mode = 'empty';
       P.innerHTML = `<div class="empty"><h2>Load the site plan</h2>
-        <ol><li>Pick the plan as a PDF or an image. For a multi-sheet PDF, you choose the sheet.</li>
+        <ol><li>Pick the plan as a PDF or an image. For a multi-page PDF, choose every sheet your walk covers. You can add more sheets later.</li>
         <li>Tap <b>Drop pin</b>, then tap where you're standing.</li>
         <li>Take photos and add notes for that spot. Everything saves on this phone.</li></ol>
         <div class="row"><button class="btn primary" id="upMap">Load plan (PDF or image)</button><button class="btn" id="noMap">Walk without a plan</button></div></div>`;
-      $('upMap').onclick = () => $('mapFile').click();
+      $('upMap').onclick = () => { S.fileMode = 'add'; $('mapFile').click(); };
       $('noMap').onclick = async () => { s.noMap = true; await touch(); renderSurvey(); };
     }
     return;
@@ -225,14 +248,23 @@ function renderMap() {
   P.hidden = false;
   if (P.dataset.mode !== 'map') {
     P.dataset.mode = 'map';
-    P.innerHTML = `<div class="mapbar"><span class="hint" id="mapHint"></span>
+    P.innerHTML = `<div class="sheetbar" id="sheetBar"></div><div class="mapbar"><span class="hint" id="mapHint"></span>
         <span class="zoom"><button id="zOut" aria-label="Zoom out">−</button><span id="zLbl">1×</span><button id="zIn" aria-label="Zoom in">+</button></span></div>
       <div class="mapscroll" id="mapScroll"><div class="mapinner" id="mapInner"><img id="mapImg" alt="Site plan"></div></div>`;
     $('zIn').onclick = () => setZoom(S.zoom * 1.5);
     $('zOut').onclick = () => setZoom(S.zoom / 1.5);
     $('mapInner').addEventListener('click', onMapTap);
+    attachPinch($('mapScroll'));
   }
   blobURL(s.mapId).then(u => { const im = $('mapImg'); if (im && u && im.getAttribute('src') !== u) im.src = u; });
+  const sb = $('sheetBar');
+  sb.innerHTML = s.sheets.map(sh => {
+    const n = S.stops.filter(p => p.sheetId === sh.id && p.x != null).length;
+    return `<button class="stab${sh.id === s.sheetId ? ' on' : ''}" data-id="${sh.id}">${esc(sh.name)}<span>${n}</span></button>`;
+  }).join('') + `<button class="stab add" id="addSheetBtn">+ Sheet</button>`;
+  sb.querySelectorAll('.stab[data-id]').forEach(b => (b.onclick = () => switchSheet(b.dataset.id)));
+  $('addSheetBtn').onclick = () => { S.fileMode = 'add'; $('mapFile').click(); };
+  sb.querySelector('.stab.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   const inner = $('mapInner');
   inner.style.width = (S.zoom * 100) + '%';
   inner.classList.toggle('armed', S.armed);
@@ -242,27 +274,61 @@ function renderMap() {
   h.classList.toggle('live', S.armed);
   inner.querySelectorAll('.pin').forEach(n => n.remove());
   for (const p of S.stops) {
-    if (p.x == null) continue;
+    if (p.x == null || p.sheetId !== s.sheetId) continue;
     const b = document.createElement('button');
     b.className = 'pin' + (p.issue ? ' issue' : '') + (p.id === S.selId ? ' sel' : '');
     b.style.left = (p.x * 100) + '%'; b.style.top = (p.y * 100) + '%';
     b.setAttribute('aria-label', 'Stop ' + p.n + (p.issue ? ' (issue)' : ''));
     b.innerHTML = `<span>${p.n}</span><i></i>`;
-    b.onclick = (e) => { e.stopPropagation(); if (!S.armed) openStop(p.id); };
+    b.onclick = (e) => { e.stopPropagation(); if (!S.armed && !justPinched()) openStop(p.id); };
     inner.appendChild(b);
   }
 }
-function setZoom(z) {
-  const sc = $('mapScroll');
-  const cx = (sc.scrollLeft + sc.clientWidth / 2) / sc.scrollWidth;
-  const cy = (sc.scrollTop + sc.clientHeight / 2) / sc.scrollHeight;
-  S.zoom = Math.max(1, Math.min(6, z));
-  renderMap();
-  sc.scrollLeft = cx * sc.scrollWidth - sc.clientWidth / 2;
-  sc.scrollTop = cy * sc.scrollHeight - sc.clientHeight / 2;
+const ZMIN = 1, ZMAX = 8;
+function applyZoom(z) {
+  S.zoom = Math.max(ZMIN, Math.min(ZMAX, z));
+  const inner = $('mapInner'); if (inner) inner.style.width = (S.zoom * 100) + '%';
+  const l = $('zLbl'); if (l) l.textContent = (Math.round(S.zoom * 10) / 10) + '×';
 }
+/* Zoom around a point (client coords); defaults to the centre of the plan window. */
+function zoomAt(z, px, py) {
+  const sc = $('mapScroll'); if (!sc) return;
+  const r = sc.getBoundingClientRect();
+  const ox = (px ?? r.left + sc.clientWidth / 2) - r.left, oy = (py ?? r.top + sc.clientHeight / 2) - r.top;
+  const cx = (sc.scrollLeft + ox) / sc.scrollWidth, cy = (sc.scrollTop + oy) / sc.scrollHeight;
+  applyZoom(z);
+  sc.scrollLeft = cx * sc.scrollWidth - ox;
+  sc.scrollTop = cy * sc.scrollHeight - oy;
+}
+function setZoom(z) { zoomAt(z); }
+/* Two-finger pinch inside the plan window (one finger still scrolls natively). Ctrl/trackpad pinch on desktop too. */
+function attachPinch(sc) {
+  let st = null;
+  const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  const mid = t => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 });
+  sc.addEventListener('touchstart', e => {
+    if (e.touches.length !== 2) return;
+    e.preventDefault();
+    const r = sc.getBoundingClientRect(), m = mid(e.touches);
+    st = { d: dist(e.touches) || 1, z: S.zoom, cx: (sc.scrollLeft + m.x - r.left) / sc.scrollWidth, cy: (sc.scrollTop + m.y - r.top) / sc.scrollHeight };
+  }, { passive: false });
+  sc.addEventListener('touchmove', e => {
+    if (!st || e.touches.length !== 2) return;
+    e.preventDefault();
+    const r = sc.getBoundingClientRect(), m = mid(e.touches);
+    applyZoom(st.z * dist(e.touches) / st.d);
+    sc.scrollLeft = st.cx * sc.scrollWidth - (m.x - r.left);
+    sc.scrollTop = st.cy * sc.scrollHeight - (m.y - r.top);
+  }, { passive: false });
+  const end = e => { if (st && e.touches.length < 2) { st = null; S.pinchUntil = Date.now() + 400; } };
+  sc.addEventListener('touchend', end); sc.addEventListener('touchcancel', end);
+  sc.addEventListener('wheel', e => { if (!e.ctrlKey) return; e.preventDefault(); zoomAt(S.zoom * Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY); }, { passive: false });
+}
+const justPinched = () => Date.now() < (S.pinchUntil || 0);
+/* Stop Safari zooming the whole page */
+['gesturestart', 'gesturechange', 'gestureend'].forEach(t => document.addEventListener(t, e => e.preventDefault(), { passive: false }));
 function onMapTap(e) {
-  if (!S.armed) return;
+  if (!S.armed || justPinched()) return;
   const r = $('mapInner').getBoundingClientRect();
   const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
   if (x < 0 || x > 1 || y < 0 || y > 1) return;
@@ -288,7 +354,7 @@ function renderStops() {
       <span class="zone ${p.zone ? '' : 'none'}">${esc(p.zone || 'No location named')}${p.issue ? '<span class="tag issue">Issue</span>' : ''}</span>
       ${p.note ? `<span class="note">${esc(p.note)}</span>` : ''}
       ${ph.length ? `<span class="thumbs">${ph.slice(0, 8).map(id => `<img data-blob="${id}" alt="">`).join('')}</span>` : ''}
-      <span class="sf"><span>${esc(fmtDate(p.createdAt))}</span><span>${ph.length} photo${ph.length === 1 ? '' : 's'}</span>${p.x == null && S.cur.mapId ? '<span>no pin</span>' : ''}</span>
+      <span class="sf"><span>${esc(fmtDate(p.createdAt))}</span><span>${ph.length} photo${ph.length === 1 ? '' : 's'}</span>${p.x == null && S.cur.mapId ? '<span>no pin</span>' : ''}${S.cur.sheets.length > 1 && sheetById(p.sheetId) ? `<span>${esc(sheetById(p.sheetId).name)}</span>` : ''}</span>
     </span></button>`;
   }).join('');
   L.querySelectorAll('.stop').forEach(b => (b.onclick = () => openStop(b.dataset.id)));
@@ -300,8 +366,35 @@ function renderSettings(full) {
   const s = S.cur;
   if (full || document.activeElement !== $('setSurveyor')) $('setSurveyor').value = s.surveyor || '';
   $('setGps').checked = s.gps !== false;
-  $('replaceMap').textContent = s.mapId ? 'Replace plan' : 'Load plan';
-  $('replaceHint').hidden = !(s.mapId && S.stops.some(p => p.x != null));
+  $('replaceMap').textContent = s.mapId ? 'Replace this sheet' : 'Load plan';
+  $('replaceHint').hidden = !(s.mapId && S.stops.some(p => p.x != null && p.sheetId === s.sheetId));
+  renderSheetSettings(full);
+}
+function renderSheetSettings(full) {
+  const box = $('sheetSettings'), s = S.cur;
+  box.hidden = !s.sheets.length;
+  const key = s.sheets.map(sh => sh.id + ':' + S.stops.filter(p => p.sheetId === sh.id && p.x != null).length).join('|');
+  if (!full && key === S.sheetKey && box.contains(document.activeElement)) return;
+  if (!full && key === S.sheetKey) return;
+  S.sheetKey = key;
+  box.innerHTML = `<span class="fl">Plan sheets</span>` + s.sheets.map(sh => {
+    const n = S.stops.filter(p => p.sheetId === sh.id && p.x != null).length;
+    return `<div class="shrow"><input class="field" data-id="${sh.id}" value="${esc(sh.name)}" maxlength="40" aria-label="Sheet name">
+      <span class="sub">${n} pin${n === 1 ? '' : 's'}</span>
+      ${n ? '' : `<button class="btn danger" data-del="${sh.id}">Remove</button>`}</div>`;
+  }).join('') + `<div class="row"><button class="btn" id="setAddSheet">+ Add sheet</button></div>`;
+  box.querySelectorAll('input[data-id]').forEach(inp => {
+    let t; inp.oninput = () => { clearTimeout(t); t = setTimeout(() => { const sh = sheetById(inp.dataset.id); if (!sh) return; sh.name = inp.value.trim() || 'Sheet'; touch(); renderMap(); renderStops(); }, 400); };
+  });
+  box.querySelectorAll('button[data-del]').forEach(b => twoTap(b, 'Remove', 'Tap again', async () => {
+    const id = b.dataset.del, sh = sheetById(id); if (!sh) return;
+    s.sheets = s.sheets.filter(x => x.id !== id);
+    if (s.sheetId === id) s.sheetId = s.sheets[0]?.id || null;
+    syncSheet(); await touch();
+    try { await idb.del('blobs', sh.mapId); } catch (_) {} dropURL(sh.mapId);
+    $('mapPanel').dataset.mode = ''; S.sheetKey = ''; renderSurvey(true); toast('Sheet removed');
+  }));
+  $('setAddSheet').onclick = () => { S.fileMode = 'add'; $('mapFile').click(); };
 }
 let survT;
 $('setSurveyor').addEventListener('input', () => {
@@ -309,7 +402,7 @@ $('setSurveyor').addEventListener('input', () => {
   survT = setTimeout(() => { S.cur.surveyor = $('setSurveyor').value.trim(); ls.set('surveyor', S.cur.surveyor); touch(); $('svSurveyor').textContent = S.cur.surveyor ? 'Surveyor: ' + S.cur.surveyor : ''; }, 500);
 });
 $('setGps').onchange = () => { S.cur.gps = $('setGps').checked; touch(); };
-$('replaceMap').onclick = () => $('mapFile').click();
+$('replaceMap').onclick = () => { S.fileMode = S.cur.mapId ? 'replace' : 'add'; $('mapFile').click(); };
 twoTap($('delSurvey'), 'Delete survey', 'Tap again to delete for good', async () => {
   const s = S.cur; if (!s) return;
   try {
@@ -317,7 +410,8 @@ twoTap($('delSurvey'), 'Delete survey', 'Tap again to delete for good', async ()
       for (const id of (p.photos || [])) await idb.del('blobs', id);
       await idb.del('stops', p.id);
     }
-    if (s.mapId) await idb.del('blobs', s.mapId);
+    for (const sh of (s.sheets || [])) await idb.del('blobs', sh.mapId);
+    if (s.mapId && !(s.sheets || []).some(sh => sh.mapId === s.mapId)) await idb.del('blobs', s.mapId);
     await idb.del('surveys', s.id);
     toast('Survey deleted');
     showList();
@@ -327,7 +421,7 @@ twoTap($('delSurvey'), 'Delete survey', 'Tap again to delete for good', async ()
 /* ---------------- stops ---------------- */
 async function createStop(x, y) {
   const n = S.stops.reduce((m, p) => Math.max(m, p.n || 0), 0) + 1;
-  const st = { id: uid(), surveyId: S.cur.id, n, x, y, zone: '', note: '', photos: [], issue: false, createdAt: new Date().toISOString(), gps: null };
+  const st = { id: uid(), surveyId: S.cur.id, n, x, y, sheetId: x != null ? S.cur.sheetId : null, zone: '', note: '', photos: [], issue: false, createdAt: new Date().toISOString(), gps: null };
   try { await idb.put('stops', st); } catch (e) { renderSurvey(); return toast(storageMsg(e)); }
   S.stops.push(st); await touch();
   S.selId = st.id; renderSurvey(); openSheet();
@@ -363,7 +457,7 @@ function flushSaves() {
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSaves(); });
 window.addEventListener('pagehide', flushSaves);
 
-function openStop(id) { flushSaves(); S.selId = id; S.armed = false; renderSurvey(); openSheet(); }
+function openStop(id) { flushSaves(); const ps = S.stops.find(x => x.id === id); if (ps && ps.sheetId && S.cur.sheetId !== ps.sheetId && sheetById(ps.sheetId)) { S.cur.sheetId = ps.sheetId; syncSheet(); S.zoom = 1; touch(); } S.selId = id; S.armed = false; renderSurvey(); openSheet(); }
 function openSheet() { $('sheet').hidden = false; $('sheet').scrollTop = 0; document.body.classList.add('editing'); renderSheet(true); }
 function closeSheet() { flushSaves(); $('sheet').hidden = true; document.body.classList.remove('editing'); S.selId = null; }
 $('sClose').onclick = () => { closeSheet(); renderSurvey(); backToPlan(); };
@@ -451,11 +545,74 @@ $('libFile').onchange = e => { addPhotos([...e.target.files]); e.target.value = 
 let lbIdx = 0;
 function openLightbox(i) {
   const p = sel(); if (!p) return; lbIdx = i;
+  lbZoomReset();
   blobURL(p.photos[i]).then(u => ($('lbImg').src = u));
   $('lbCap').textContent = `Stop ${p.n} · photo ${i + 1} of ${p.photos.length}`;
   $('lb').hidden = false;
 }
 $('lbClose').onclick = () => ($('lb').hidden = true);
+
+/* Photo viewer zoom: pinch, one-finger pan while zoomed, double-tap, ctrl/trackpad pinch on desktop */
+const LB = { s: 1, x: 0, y: 0 };
+function lbApply() { $('lbImg').style.transform = `translate(${LB.x}px,${LB.y}px) scale(${LB.s})`; }
+function lbZoomReset() { LB.s = 1; LB.x = 0; LB.y = 0; lbApply(); }
+function lbClamp() {
+  if (LB.s <= 1.001) { LB.s = 1; LB.x = 0; LB.y = 0; return; }
+  const img = $('lbImg'), box = $('lbPic').getBoundingClientRect();
+  const mx = Math.max(0, (img.clientWidth * LB.s - box.width) / 2), my = Math.max(0, (img.clientHeight * LB.s - box.height) / 2);
+  LB.x = Math.max(-mx, Math.min(mx, LB.x)); LB.y = Math.max(-my, Math.min(my, LB.y));
+}
+function lbZoomTo(s, fx, fy) { // fx, fy: point relative to the viewer centre
+  const u = (fx - LB.x) / LB.s, v = (fy - LB.y) / LB.s;
+  LB.s = Math.max(1, Math.min(6, s)); LB.x = fx - u * LB.s; LB.y = fy - v * LB.s;
+  lbClamp(); lbApply();
+}
+(function attachLbZoom() {
+  const pic = $('lbPic');
+  const rel = (x, y) => { const r = pic.getBoundingClientRect(); return { x: x - (r.left + r.width / 2), y: y - (r.top + r.height / 2) }; };
+  let pinch = null, pan = null, lastTap = 0;
+  pic.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const t = e.touches;
+    if (t.length === 2) {
+      const m = rel((t[0].clientX + t[1].clientX) / 2, (t[0].clientY + t[1].clientY) / 2);
+      pinch = { d: Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY) || 1, s: LB.s, u: (m.x - LB.x) / LB.s, v: (m.y - LB.y) / LB.s };
+      pan = null;
+    } else if (t.length === 1) {
+      const now = Date.now(), p = rel(t[0].clientX, t[0].clientY);
+      if (now - lastTap < 300) { lbZoomTo(LB.s > 1 ? 1 : 2.5, p.x, p.y); lastTap = 0; pan = null; return; }
+      lastTap = now;
+      pan = { x0: t[0].clientX, y0: t[0].clientY, x: LB.x, y: LB.y };
+    }
+  }, { passive: false });
+  pic.addEventListener('touchmove', e => {
+    e.preventDefault();
+    const t = e.touches;
+    if (pinch && t.length === 2) {
+      const m = rel((t[0].clientX + t[1].clientX) / 2, (t[0].clientY + t[1].clientY) / 2);
+      LB.s = Math.max(1, Math.min(6, pinch.s * Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY) / pinch.d));
+      LB.x = m.x - pinch.u * LB.s; LB.y = m.y - pinch.v * LB.s;
+      lbClamp(); lbApply();
+    } else if (pan && t.length === 1 && LB.s > 1) {
+      LB.x = pan.x + (t[0].clientX - pan.x0); LB.y = pan.y + (t[0].clientY - pan.y0);
+      lbClamp(); lbApply();
+    }
+  }, { passive: false });
+  const end = e => {
+    if (e.touches.length < 2) pinch = null;
+    if (e.touches.length === 1) pan = { x0: e.touches[0].clientX, y0: e.touches[0].clientY, x: LB.x, y: LB.y };
+    if (!e.touches.length) pan = null;
+  };
+  pic.addEventListener('touchend', end); pic.addEventListener('touchcancel', end);
+  pic.addEventListener('wheel', e => {
+    e.preventDefault();
+    const p = rel(e.clientX, e.clientY);
+    if (e.ctrlKey) lbZoomTo(LB.s * Math.exp(-e.deltaY * 0.01), p.x, p.y);
+    else if (LB.s > 1) { LB.x -= e.deltaX; LB.y -= e.deltaY; lbClamp(); lbApply(); }
+  }, { passive: false });
+  pic.addEventListener('dblclick', e => { const p = rel(e.clientX, e.clientY); lbZoomTo(LB.s > 1 ? 1 : 2.5, p.x, p.y); });
+  window.addEventListener('resize', () => { if (!$('lb').hidden) { lbClamp(); lbApply(); } });
+})();
 twoTap($('lbDel'), 'Remove', 'Tap again to remove', async () => {
   const p = sel(); if (!p) return;
   const gone = p.photos[lbIdx];
@@ -482,62 +639,94 @@ async function renderPdfPage(pdf, n, maxSide) {
   await page.render({ canvasContext: ctx, viewport: vp }).promise;
   return c;
 }
-async function useSheet(pdf, n) {
-  const P = $('mapPanel'); P.dataset.mode = 'busy';
-  P.innerHTML = `<div class="empty"><h2>Preparing sheet ${n}…</h2><p class="sub">Large plan sets can take a few seconds.</p></div>`;
+function busy(msg) {
+  const P = $('mapPanel'); P.hidden = false; P.dataset.mode = 'busy';
+  P.innerHTML = `<div class="empty"><h2>${esc(msg)}</h2><p class="sub">Large plan sets can take a few seconds.</p></div>`;
+}
+async function pdfSheetBlob(pdf, n) {
   const c = await renderPdfPage(pdf, n, 4096);
   const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.88));
   if (!blob) throw new Error('The sheet could not be converted');
-  await setMap(blob, c.width, c.height);
+  return { blob, w: c.width, h: c.height };
 }
-async function pickSheet(pdf) {
+async function addPdfPages(pdf, pages, labels, base) {
+  const items = []; let k = 0;
+  for (const n of pages) {
+    k++; busy(pages.length > 1 ? `Preparing sheet ${k} of ${pages.length}…` : 'Preparing the sheet…');
+    const r = await pdfSheetBlob(pdf, n);
+    items.push({ ...r, name: (labels && labels[n - 1]) || (pdf.numPages > 1 ? `Page ${n}` : base) });
+  }
+  await applySheets(items);
+}
+/* Add sheets to the survey, or replace the image of the current sheet. */
+async function applySheets(items) {
+  const s = S.cur;
+  if (S.fileMode === 'replace' && curSheet() && items.length) {
+    const sh = curSheet(), old = sh.mapId, it = items[0];
+    sh.mapId = await putBlob(it.blob); sh.w = it.w; sh.h = it.h;
+    try { await idb.del('blobs', old); } catch (_) {} dropURL(old);
+  } else {
+    let firstId = null;
+    for (const it of items) {
+      const sh = { id: uid(), name: String(it.name || 'Sheet').slice(0, 40), mapId: await putBlob(it.blob), w: it.w, h: it.h };
+      s.sheets.push(sh); firstId = firstId || sh.id;
+    }
+    if (firstId) s.sheetId = firstId;
+  }
+  s.noMap = false; syncSheet(); await touch();
+  const n = items.length, replaced = S.fileMode === 'replace';
+  S.zoom = 1; S.fileMode = 'add'; S.sheetKey = ''; $('mapPanel').dataset.mode = ''; renderSurvey(true);
+  toast(replaced ? 'Sheet replaced.' : n > 1 ? `${n} sheets added. Switch between them with the tabs above the plan.` : (s.sheets.length > 1 ? 'Sheet added.' : 'Plan loaded. Tap Drop pin to start.'), 4000);
+}
+async function pickSheets(pdf, labels) {
   const P = $('mapPanel'); P.hidden = false; P.dataset.mode = 'pick';
-  const N = pdf.numPages;
-  P.innerHTML = `<div class="empty"><h2>Pick the sheet</h2>
-    <p class="sub">This PDF has ${N} pages${N > 60 ? ' (showing the first 60)' : ''}. Tap the one to use as the plan.</p>
+  const N = pdf.numPages, M = Math.min(N, 60), replace = S.fileMode === 'replace';
+  P.innerHTML = `<div class="empty"><h2>${replace ? 'Pick the replacement sheet' : 'Pick the sheets'}</h2>
+    <p class="sub">This PDF has ${N} pages${N > 60 ? ' (showing the first 60)' : ''}. ${replace ? 'Tap the page to use.' : 'Tap every page your walk covers, then tap Add.'}</p>
     <div class="sheets" id="sheetGrid"></div>
-    <button class="btn" id="sheetCancel">Cancel</button></div>`;
-  $('sheetCancel').onclick = () => { P.dataset.mode = ''; renderSurvey(); };
+    <div class="row"><button class="btn primary" id="sheetAdd" ${replace ? 'hidden' : ''} disabled>Add sheets</button><button class="btn" id="sheetCancel">Cancel</button></div></div>`;
+  const picked = new Set();
+  $('sheetCancel').onclick = () => { P.dataset.mode = ''; S.fileMode = 'add'; renderSurvey(); };
+  const go = async (pages) => {
+    try { await addPdfPages(pdf, pages, labels, 'Sheet'); }
+    catch (err) { P.dataset.mode = ''; renderSurvey(); toast('Could not use that sheet: ' + (err.message || err)); }
+  };
+  $('sheetAdd').onclick = () => { if (picked.size) go([...picked].sort((a, b) => a - b)); };
   const grid = $('sheetGrid');
-  for (let i = 1; i <= Math.min(N, 60); i++) {
+  for (let i = 1; i <= M; i++) {
     const b = document.createElement('button');
-    b.innerHTML = `<span class="hint">Page ${i}</span>`;
-    b.onclick = async () => {
-      grid.querySelectorAll('button').forEach(x => (x.disabled = true));
-      try { await useSheet(pdf, i); }
-      catch (err) { P.dataset.mode = ''; renderSurvey(); toast('Could not use that sheet: ' + (err.message || err)); }
+    b.innerHTML = `<span class="hint">${esc((labels && labels[i - 1]) || 'Page ' + i)}</span>`;
+    b.onclick = () => {
+      if (replace) { grid.querySelectorAll('button').forEach(x => (x.disabled = true)); go([i]); return; }
+      if (picked.has(i)) { picked.delete(i); b.classList.remove('picked'); } else { picked.add(i); b.classList.add('picked'); }
+      const a = $('sheetAdd'); a.disabled = !picked.size;
+      a.textContent = picked.size ? `Add ${picked.size} sheet${picked.size === 1 ? '' : 's'}` : 'Add sheets';
     };
     grid.appendChild(b);
   }
-  for (let i = 1; i <= Math.min(N, 60); i++) {
+  for (let i = 1; i <= M; i++) {
     if (P.dataset.mode !== 'pick') break;
     try { const c = await renderPdfPage(pdf, i, 260); grid.children[i - 1]?.prepend(c); } catch (_) {}
   }
 }
-async function setMap(blob, w, h) {
-  const old = S.cur.mapId;
-  const id = await putBlob(blob);
-  Object.assign(S.cur, { mapId: id, mapW: w, mapH: h, noMap: false });
-  await touch();
-  if (old) { try { await idb.del('blobs', old); } catch (_) {} dropURL(old); }
-  S.zoom = 1; $('mapPanel').dataset.mode = ''; renderSurvey();
-  toast('Plan loaded. Tap Drop pin to start.');
-}
 $('mapFile').onchange = async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f || !S.cur) return;
+  if (S.fileMode === 'replace' && !curSheet()) S.fileMode = 'add';
   const isPdf = f.type === 'application/pdf' || /\.pdf$/i.test(f.name);
+  const base = f.name.replace(/\.[^.]+$/, '').trim().slice(0, 40) || 'Sheet';
   try {
     if (isPdf) {
       if (!window.pdfjsLib) throw new Error('the PDF reader did not load');
       toast('Opening PDF…');
       const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(await f.arrayBuffer()) }).promise;
-      if (pdf.numPages === 1) await useSheet(pdf, 1); else await pickSheet(pdf);
+      let labels = null; try { labels = await pdf.getPageLabels(); } catch (_) {}
+      if (pdf.numPages === 1) await addPdfPages(pdf, [1], labels, base); else await pickSheets(pdf, labels);
     } else {
-      toast('Loading plan…');
+      busy('Preparing the plan…');
       const r = await shrink(f, 4096, 0.88);
-      await setMap(r.blob, r.w, r.h);
+      await applySheets([{ ...r, name: base }]);
     }
-  } catch (err) { $('mapPanel').dataset.mode = ''; renderSurvey(); toast('Could not load that plan: ' + (err.message || err), 4500); }
+  } catch (err) { $('mapPanel').dataset.mode = ''; S.fileMode = 'add'; renderSurvey(); toast('Could not load that plan: ' + (err.message || err), 4500); }
 };
 
 /* ---------------- PDF report ---------------- */
@@ -609,12 +798,20 @@ async function buildReport(progress) {
   }
   y += 108 + 20;
 
-  // Plan with pins
-  if (s.mapId) {
-    progress('Adding the plan…');
-    const img = await reportImage(s.mapId, 3000, pinPainter(stops));
+  // Plan sheets with pins
+  const sheets = (s.sheets || []).filter(sh => sh.mapId);
+  const multi = sheets.length > 1;
+  const sheetName = id => (sheets.find(x => x.id === id) || {}).name || '';
+  let plansDrawn = 0;
+  for (const sh of sheets) {
+    const pins = stops.filter(p => p.sheetId === sh.id && p.x != null);
+    if (multi && !pins.length) continue;
+    progress(multi ? `Adding ${sh.name}…` : 'Adding the plan…');
+    const img = await reportImage(sh.mapId, 3000, pinPainter(pins));
     if (img) {
-      sectionHead('Site plan');
+      if (plansDrawn) { doc.addPage(); y = CT; }
+      plansDrawn++;
+      sectionHead(multi ? `Site plan — ${sh.name}` : 'Site plan');
       let w = CW, h = CW * img.h / img.w;
       const maxH = BOTTOM - y - 18;
       if (h > maxH) { h = maxH; w = h * img.w / img.h; }
@@ -623,12 +820,13 @@ async function buildReport(progress) {
       doc.setDrawColor(...DIV); doc.setLineWidth(0.75); doc.rect(x, y, w, h);
       y += h + 12;
       doc.setFont('helvetica', 'italic'); doc.setFontSize(8.5); doc.setTextColor(...MID);
-      doc.text('Numbered pins mark where each stop was documented.' + (issues.length ? ' Red pins are issues.' : ''), M, y + 4);
+      const cap = (multi ? `Stops on this sheet: ${pins.map(p => p.n).join(', ')}. ` : 'Numbered pins mark where each stop was documented. ') + (pins.some(p => p.issue) ? 'Red pins are issues.' : '');
+      doc.text(doc.splitTextToSize(cap, CW), M, y + 4);
       y += 18;
     }
   }
 
-  if (s.mapId) { doc.addPage(); y = CT; }
+  if (plansDrawn) { doc.addPage(); y = CT; }
 
   // Issues
   if (issues.length) {
@@ -656,7 +854,7 @@ async function buildReport(progress) {
       doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
       for (const l of nl) { doc.text(l, M + 38, y); y += 13; }
       doc.setFontSize(8.5); doc.setTextColor(...MID);
-      doc.text(`Stop ${p.n} · ${p.photos?.length || 0} photo${(p.photos?.length || 0) === 1 ? '' : 's'} · details below`, M + 38, y); 
+      doc.text(`Stop ${p.n}${multi && sheetName(p.sheetId) ? ' · ' + sheetName(p.sheetId) : ''} · ${p.photos?.length || 0} photo${(p.photos?.length || 0) === 1 ? '' : 's'} · details below`, M + 38, y); 
       y = Math.max(y, top + h) + 8;
     }
     y += 16;
@@ -664,7 +862,10 @@ async function buildReport(progress) {
 
   // Summary table
   sectionHead('Stop summary');
-  const cols = [{ t: '#', w: 30 }, { t: 'Location', w: 150 }, { t: 'Notes', w: 270 }, { t: 'Photos', w: 54 }];
+  const cols = multi
+    ? [{ t: '#', w: 30 }, { t: 'Location', w: 130 }, { t: 'Sheet', w: 84 }, { t: 'Notes', w: 206 }, { t: 'Photos', w: 54 }]
+    : [{ t: '#', w: 30 }, { t: 'Location', w: 150 }, { t: 'Notes', w: 270 }, { t: 'Photos', w: 54 }];
+  const cNote = multi ? 3 : 2;
   const head = () => {
     doc.setFillColor(...BLACK); doc.rect(M, y, CW, 22, 'F');
     doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(255, 255, 255);
@@ -675,9 +876,10 @@ async function buildReport(progress) {
   stops.forEach((p, i) => {
     doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
     const zl = doc.splitTextToSize(p.zone || '—', cols[1].w - 14).slice(0, 3);
-    let nl = doc.splitTextToSize((p.note || '—').replace(/\s+/g, ' '), cols[2].w - 14);
+    let nl = doc.splitTextToSize((p.note || '—').replace(/\s+/g, ' '), cols[cNote].w - 14);
     if (nl.length > 3) { nl = nl.slice(0, 3); nl[2] = nl[2].replace(/.{0,3}$/, '…'); }
-    const rh = Math.max(zl.length, nl.length) * 11.5 + 11;
+    const shl = multi ? doc.splitTextToSize(sheetName(p.sheetId) || '—', cols[2].w - 14).slice(0, 3) : [];
+    const rh = Math.max(zl.length, nl.length, shl.length) * 11.5 + 11;
     if (ensure(rh)) head();
     if (p.issue) { doc.setFillColor(...RED_SOFT); doc.rect(M, y, CW, rh, 'F'); doc.setFillColor(...RED); doc.rect(M, y, 3, rh, 'F'); }
     else if (i % 2 === 0) { doc.setFillColor(...LO); doc.rect(M, y, CW, rh, 'F'); }
@@ -686,7 +888,9 @@ async function buildReport(progress) {
     let cx = M;
     doc.setFont('helvetica', 'bold'); if (p.issue) doc.setTextColor(...RED); doc.text(String(p.n), cx + 7, y + 15); cx += cols[0].w;
     doc.text(zl, cx + 7, y + 15, { lineHeightFactor: 1.28 }); doc.setTextColor(...BLACK); cx += cols[1].w;
-    doc.setFont('helvetica', 'normal'); doc.text(nl, cx + 7, y + 15, { lineHeightFactor: 1.28 }); cx += cols[2].w;
+    doc.setFont('helvetica', 'normal');
+    if (multi) { doc.text(shl, cx + 7, y + 15, { lineHeightFactor: 1.28 }); cx += cols[2].w; }
+    doc.text(nl, cx + 7, y + 15, { lineHeightFactor: 1.28 }); cx += cols[cNote].w;
     doc.text(String(p.photos?.length || 0), cx + 7, y + 15);
     y += rh;
   });
@@ -712,7 +916,8 @@ async function buildReport(progress) {
     y += 38;
     const sub = [`${p.photos?.length || 0} photo${(p.photos?.length || 0) === 1 ? '' : 's'}`];
     if (p.gps) sub.push(`GPS ${p.gps.lat}, ${p.gps.lon} (±${p.gps.acc} m)`);
-    if (s.mapId && p.x == null) sub.push('not pinned on plan');
+    if (multi && sheetName(p.sheetId)) sub.push('Sheet: ' + sheetName(p.sheetId));
+    if (sheets.length && p.x == null) sub.push('not pinned on plan');
     doc.text(sub.join('  ·  '), M, y); y += 16;
     if (p.note) {
       doc.setFont('helvetica', 'normal'); doc.setFontSize(10.5); doc.setTextColor(...BLACK);

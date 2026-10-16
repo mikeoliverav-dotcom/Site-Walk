@@ -30,7 +30,8 @@ Wait until the top-right label says **Ready offline**. From then on it works wit
 ## 3. On site
 
 1. **+ New survey** → name the site → choose **I have a plan** or **No plan**.
-   - **With a plan:** **Load plan** (a PDF or an image; for a multi-sheet PDF, tap the sheet you want), then tap **+ Drop pin** (the big button at the bottom of the screen) and tap where you're standing on the plan.
+   - **With a plan:** **Load plan** (a PDF or an image). For a multi-page PDF, tap every sheet your walk covers, then **Add**. Then tap **+ Drop pin** (the big button at the bottom of the screen) and tap where you're standing on the plan.
+   - **Several sheets:** tabs above the plan switch between sheets, and each pin goes on the sheet you're looking at. **+ Sheet** adds another sheet any time. Rename or remove sheets under Survey settings → Plan sheets. Stop numbers run continuously across all sheets, and tapping a stop in the list jumps to its sheet.
    - **No plan:** there's no plan window. Tap **+ New stop** (bottom of the screen) at each spot and type the location name.
 2. **Take photo** / **Add from library**, then fill in the location and notes. Everything saves as you type. Each new stop starts with a blank location; locations you've already used appear as quick-pick buttons.
 3. Tick **Issue** on any stop that's a problem. Its pin turns red, and the report lists it under **Issues**.
