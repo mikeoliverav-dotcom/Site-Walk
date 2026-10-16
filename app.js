@@ -2,7 +2,7 @@
 /* Site Walk — offline site survey app.
    Everything is stored on the device in IndexedDB. No server, no account. */
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 /* Report header/footer text. Set `site` to a web address to show it in the footer. */
 const BRAND = { name: 'Site Walk', tagline: 'Survey report', site: '' };
 
@@ -482,7 +482,7 @@ function renderSheet(full) {
   if (full || document.activeElement !== $('sZone')) $('sZone').value = p.zone || '';
   if (full || document.activeElement !== $('sNote')) $('sNote').value = p.note || '';
   const ph = p.photos || [];
-  $('sPhotos').innerHTML = ph.map((id, i) => `<button data-i="${i}" aria-label="Open photo ${i + 1}"><img data-blob="${id}" alt=""></button>`).join('');
+  $('sPhotos').innerHTML = ph.map((id, i) => { const n = photoMarks(p, id).length; return `<button data-i="${i}" aria-label="Open photo ${i + 1}${n ? `, ${n} arrow${n === 1 ? '' : 's'}` : ''}"><img data-blob="${id}" alt="">${n ? `<span class="mk">↗${n > 1 ? n : ''}</span>` : ''}</button>`; }).join('');
   $('sPhotos').querySelectorAll('button').forEach(b => (b.onclick = () => openLightbox(+b.dataset.i)));
   hydrate($('sPhotos'));
   const zones = [...new Set(S.stops.map(x => x.zone).filter(Boolean))].filter(z => z !== p.zone).slice(-6);
@@ -545,20 +545,111 @@ $('libFile').onchange = e => { addPhotos([...e.target.files]); e.target.value = 
 let lbIdx = 0;
 function openLightbox(i) {
   const p = sel(); if (!p) return; lbIdx = i;
-  lbZoomReset();
-  blobURL(p.photos[i]).then(u => ($('lbImg').src = u));
-  $('lbCap').textContent = `Stop ${p.n} · photo ${i + 1} of ${p.photos.length}`;
+  lbZoomReset(); setArrowMode(false); ARW.draft = null;
+  $('lbMarks').innerHTML = '';
   $('lb').hidden = false;
+  blobURL(p.photos[i]).then(u => { const im = $('lbImg'); if (im.getAttribute('src') !== u) im.src = u; else lbFit(); });
+  $('lbCap').textContent = `Stop ${p.n} · photo ${i + 1} of ${p.photos.length}`;
 }
-$('lbClose').onclick = () => ($('lb').hidden = true);
+$('lbClose').onclick = () => { setArrowMode(false); $('lb').hidden = true; };
+/* Size the photo (and its arrow layer) to fit the viewer */
+function lbFit() {
+  const im = $('lbImg'), st = $('lbStage'), box = $('lbPic');
+  if (!im.naturalWidth) return;
+  const k = Math.min(box.clientWidth / im.naturalWidth, box.clientHeight / im.naturalHeight);
+  st.style.width = Math.round(im.naturalWidth * k) + 'px'; st.style.height = Math.round(im.naturalHeight * k) + 'px';
+  renderMarks();
+}
+$('lbImg').addEventListener('load', lbFit);
+if (window.ResizeObserver) new ResizeObserver(() => { if (!$('lb').hidden) { lbFit(); lbClamp(); lbApply(); } }).observe($('lbPic'));
+
+/* ---- Arrow annotations: stored per photo as {x1,y1 (tail), x2,y2 (tip)} in 0..1 image coords; the photo itself is untouched ---- */
+const ARW = { on: false, draft: null };
+const ARROW_RED = '#E5372B';
+function photoMarks(p, id) { return (p && p.marks && p.marks[id]) || []; }
+function curMarks() { const p = sel(); return p ? photoMarks(p, p.photos[lbIdx]) : []; }
+function arrowGeom(a, W, H, unit) {
+  const x1 = a.x1 * W, y1 = a.y1 * H, x2 = a.x2 * W, y2 = a.y2 * H;
+  const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1, ux = dx / len, uy = dy / len;
+  const L = Math.min(52 * unit, len * 0.6), hw = L * 0.5;
+  const bx = x2 - ux * L, by = y2 - uy * L, px = -uy, py = ux;
+  return { x1, y1, sx: x2 - ux * L * 0.6, sy: y2 - uy * L * 0.6, tip: [x2, y2], b1: [bx + px * hw, by + py * hw], b2: [bx - px * hw, by - py * hw] };
+}
+function arrowSVG(a, W, H) {
+  const g = arrowGeom(a, W, H, 1), pts = [g.tip, g.b1, g.b2].map(p => p.map(n => n.toFixed(1)).join(',')).join(' ');
+  return `<g><line x1="${g.x1}" y1="${g.y1}" x2="${g.sx}" y2="${g.sy}" stroke="#fff" stroke-width="18" stroke-linecap="round"/>
+    <polygon points="${pts}" fill="#fff" stroke="#fff" stroke-width="9" stroke-linejoin="round"/>
+    <line x1="${g.x1}" y1="${g.y1}" x2="${g.sx}" y2="${g.sy}" stroke="${ARROW_RED}" stroke-width="10" stroke-linecap="round"/>
+    <polygon points="${pts}" fill="${ARROW_RED}"/></g>`;
+}
+function drawArrowsCanvas(ctx, W, H, marks) {
+  const unit = W / 1000, HH = H;
+  for (const a of marks) {
+    const g = arrowGeom(a, W, HH, unit);
+    const tri = () => { ctx.beginPath(); ctx.moveTo(...g.tip); ctx.lineTo(...g.b1); ctx.lineTo(...g.b2); ctx.closePath(); };
+    ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 18 * unit; ctx.beginPath(); ctx.moveTo(g.x1, g.y1); ctx.lineTo(g.sx, g.sy); ctx.stroke();
+    tri(); ctx.fillStyle = '#fff'; ctx.lineWidth = 9 * unit; ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = ARROW_RED; ctx.lineWidth = 10 * unit; ctx.beginPath(); ctx.moveTo(g.x1, g.y1); ctx.lineTo(g.sx, g.sy); ctx.stroke();
+    tri(); ctx.fillStyle = ARROW_RED; ctx.fill(); ctx.restore();
+  }
+}
+function renderMarks() {
+  const svg = $('lbMarks'), im = $('lbImg');
+  $('lbUndo').disabled = !curMarks().length;
+  if (!im.naturalWidth) { svg.innerHTML = ''; return; }
+  const W = 1000, H = Math.round(1000 * im.naturalHeight / im.naturalWidth);
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const list = [...curMarks()]; if (ARW.draft) list.push(ARW.draft);
+  // keep the arrow stroke a constant on-screen size: viewBox is 1000 wide, stage is its fitted width
+  svg.innerHTML = list.map(a => arrowSVG(a, W, H)).join('');
+}
+function setArrowMode(on) {
+  ARW.on = on; ARW.draft = null;
+  $('lbArrow').classList.toggle('armed', on);
+  $('lbArrow').textContent = on ? 'Done adding arrows' : '↗ Arrow';
+  $('lb').classList.toggle('drawing', on);
+  const h = $('lbHint');
+  h.textContent = on ? 'Drag from where the arrow starts to the thing it points at. Tap to drop a quick arrow.' : 'Pinch to zoom · double-tap to zoom in or out';
+  h.classList.toggle('live', on);
+}
+$('lbArrow').onclick = () => setArrowMode(!ARW.on);
+function lbNorm(x, y) {
+  const r = $('lbStage').getBoundingClientRect();
+  return { u: Math.max(0, Math.min(1, (x - r.left) / r.width)), v: Math.max(0, Math.min(1, (y - r.top) / r.height)) };
+}
+function drawStart(x, y) { const n = lbNorm(x, y); ARW.draft = { x1: n.u, y1: n.v, x2: n.u, y2: n.v }; renderMarks(); }
+function drawMove(x, y) { if (!ARW.draft) return; const n = lbNorm(x, y); ARW.draft.x2 = n.u; ARW.draft.y2 = n.v; renderMarks(); }
+async function drawEnd() {
+  const a = ARW.draft; ARW.draft = null; if (!a) return;
+  const im = $('lbImg'), ar = im.naturalHeight / im.naturalWidth || 1;
+  if (Math.hypot(a.x2 - a.x1, (a.y2 - a.y1) * ar) < 0.03) { // a tap: quick arrow pointing at the tap from lower-left
+    const tx = a.x1, ty = a.y1, off = 0.15;
+    a.x2 = tx; a.y2 = ty;
+    a.x1 = tx - off >= 0 ? tx - off : tx + off;
+    a.y1 = ty + off / ar <= 1 ? ty + off / ar : ty - off / ar;
+  }
+  const r4 = n => Math.round(n * 10000) / 10000;
+  const p = sel(); if (!p) return;
+  const id = p.photos[lbIdx];
+  p.marks = p.marks || {};
+  p.marks[id] = [...photoMarks(p, id), { x1: r4(a.x1), y1: r4(a.y1), x2: r4(a.x2), y2: r4(a.y2) }];
+  await saveStop(p); renderMarks(); renderSheet(false);
+}
+$('lbUndo').onclick = async () => {
+  const p = sel(); if (!p) return; const id = p.photos[lbIdx];
+  const m = photoMarks(p, id); if (!m.length) return;
+  p.marks[id] = m.slice(0, -1); if (!p.marks[id].length) delete p.marks[id];
+  await saveStop(p); renderMarks(); renderSheet(false);
+};
 
 /* Photo viewer zoom: pinch, one-finger pan while zoomed, double-tap, ctrl/trackpad pinch on desktop */
 const LB = { s: 1, x: 0, y: 0 };
-function lbApply() { $('lbImg').style.transform = `translate(${LB.x}px,${LB.y}px) scale(${LB.s})`; }
+function lbApply() { $('lbStage').style.transform = `translate(${LB.x}px,${LB.y}px) scale(${LB.s})`; }
 function lbZoomReset() { LB.s = 1; LB.x = 0; LB.y = 0; lbApply(); }
 function lbClamp() {
   if (LB.s <= 1.001) { LB.s = 1; LB.x = 0; LB.y = 0; return; }
-  const img = $('lbImg'), box = $('lbPic').getBoundingClientRect();
+  const img = $('lbStage'), box = $('lbPic').getBoundingClientRect();
   const mx = Math.max(0, (img.clientWidth * LB.s - box.width) / 2), my = Math.max(0, (img.clientHeight * LB.s - box.height) / 2);
   LB.x = Math.max(-mx, Math.min(mx, LB.x)); LB.y = Math.max(-my, Math.min(my, LB.y));
 }
@@ -574,6 +665,8 @@ function lbZoomTo(s, fx, fy) { // fx, fy: point relative to the viewer centre
   pic.addEventListener('touchstart', e => {
     e.preventDefault();
     const t = e.touches;
+    if (ARW.on && t.length === 1) { drawStart(t[0].clientX, t[0].clientY); pan = null; return; }
+    if (t.length === 2) { ARW.draft = null; renderMarks(); }
     if (t.length === 2) {
       const m = rel((t[0].clientX + t[1].clientX) / 2, (t[0].clientY + t[1].clientY) / 2);
       pinch = { d: Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY) || 1, s: LB.s, u: (m.x - LB.x) / LB.s, v: (m.y - LB.y) / LB.s };
@@ -588,6 +681,7 @@ function lbZoomTo(s, fx, fy) { // fx, fy: point relative to the viewer centre
   pic.addEventListener('touchmove', e => {
     e.preventDefault();
     const t = e.touches;
+    if (ARW.on && ARW.draft && t.length === 1) { drawMove(t[0].clientX, t[0].clientY); return; }
     if (pinch && t.length === 2) {
       const m = rel((t[0].clientX + t[1].clientX) / 2, (t[0].clientY + t[1].clientY) / 2);
       LB.s = Math.max(1, Math.min(6, pinch.s * Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY) / pinch.d));
@@ -599,6 +693,7 @@ function lbZoomTo(s, fx, fy) { // fx, fy: point relative to the viewer centre
     }
   }, { passive: false });
   const end = e => {
+    if (ARW.draft && !e.touches.length) { drawEnd(); return; }
     if (e.touches.length < 2) pinch = null;
     if (e.touches.length === 1) pan = { x0: e.touches[0].clientX, y0: e.touches[0].clientY, x: LB.x, y: LB.y };
     if (!e.touches.length) pan = null;
@@ -610,13 +705,17 @@ function lbZoomTo(s, fx, fy) { // fx, fy: point relative to the viewer centre
     if (e.ctrlKey) lbZoomTo(LB.s * Math.exp(-e.deltaY * 0.01), p.x, p.y);
     else if (LB.s > 1) { LB.x -= e.deltaX; LB.y -= e.deltaY; lbClamp(); lbApply(); }
   }, { passive: false });
-  pic.addEventListener('dblclick', e => { const p = rel(e.clientX, e.clientY); lbZoomTo(LB.s > 1 ? 1 : 2.5, p.x, p.y); });
-  window.addEventListener('resize', () => { if (!$('lb').hidden) { lbClamp(); lbApply(); } });
+  pic.addEventListener('dblclick', e => { if (ARW.on) return; const p = rel(e.clientX, e.clientY); lbZoomTo(LB.s > 1 ? 1 : 2.5, p.x, p.y); });
+  pic.addEventListener('mousedown', e => { if (ARW.on) { e.preventDefault(); drawStart(e.clientX, e.clientY); } });
+  window.addEventListener('mousemove', e => { if (ARW.on && ARW.draft) drawMove(e.clientX, e.clientY); });
+  window.addEventListener('mouseup', () => { if (ARW.on && ARW.draft) drawEnd(); });
+  window.addEventListener('resize', () => { if (!$('lb').hidden) { lbFit(); lbClamp(); lbApply(); } });
 })();
 twoTap($('lbDel'), 'Remove', 'Tap again to remove', async () => {
   const p = sel(); if (!p) return;
   const gone = p.photos[lbIdx];
   p.photos = p.photos.filter((_, i) => i !== lbIdx);
+  if (p.marks) delete p.marks[gone];
   await saveStop(p);
   try { await idb.del('blobs', gone); } catch (_) {}
   dropURL(gone);
@@ -981,7 +1080,8 @@ async function buildReport(progress) {
       const pair = [];
       for (let j = i; j < Math.min(i + 2, ph.length); j++) {
         done++; progress(`Adding photo ${done} of ${totalPhotos}…`);
-        const im = await reportImage(ph[j], 1400);
+        const mk = photoMarks(p, ph[j]);
+        const im = await reportImage(ph[j], 1400, mk.length ? (ctx, w, h) => drawArrowsCanvas(ctx, w, h, mk) : null);
         if (im) {
           let w = colW, h = colW * im.h / im.w;
           if (h > colW * 1.3) { h = colW * 1.3; w = h * im.w / im.h; }

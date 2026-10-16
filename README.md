@@ -34,6 +34,7 @@ Wait until the top-right label says **Ready offline**. From then on it works wit
    - **Several sheets:** tabs above the plan switch between sheets, and each pin goes on the sheet you're looking at. **+ Sheet** adds another sheet any time. Rename or remove sheets under Survey settings → Plan sheets. Stop numbers run continuously across all sheets, and tapping a stop in the list jumps to its sheet.
    - **No plan:** there's no plan window. Tap **+ New stop** (bottom of the screen) at each spot and type the location name.
 2. **Take photo** / **Add from library**, then fill in the location and notes. Everything saves as you type. Each new stop starts with a blank location; locations you've already used appear as quick-pick buttons.
+   To point something out in a photo, open it and tap **↗ Arrow**, then drag from where the arrow should start to the thing it points at (or just tap for a quick arrow). **Undo arrow** removes the last one. Arrows show in the report; the original photo is never altered.
 3. Tick **Issue** on any stop that's a problem. Its pin turns red, and the report lists it under **Issues**.
    On an iPad (or any large screen) held in landscape, the plan and **+ Drop pin** sit on the left and the list of stops on the right.
 4. GPS is recorded with each stop when available. This works offline too, and you can turn it off in Survey settings.

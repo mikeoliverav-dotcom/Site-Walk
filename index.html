@@ -209,14 +209,22 @@ body.editing{overflow:hidden}
 .saved{font-size:12px;color:var(--muted);font-family:var(--mono)}
 .gps{font-size:12px;color:var(--muted);font-family:var(--mono)}
 
-.lightbox{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.94);display:flex;flex-direction:column;
+.lightbox{position:fixed;inset:0;z-index:40;background:#000;display:flex;flex-direction:column;
   padding:calc(12px + env(safe-area-inset-top,0px)) max(12px,env(safe-area-inset-right,0px)) calc(12px + env(safe-area-inset-bottom,0px)) max(12px,env(safe-area-inset-left,0px))}
 .lightbox .bar{display:flex;gap:8px;justify-content:space-between;align-items:center;color:#fff;flex-wrap:wrap}
-.lightbox .bar .btn{background:#222;border-color:#444;color:#fff}
+.lightbox .bar .btn{background:#222;border-color:#444;color:#fff;min-height:40px;padding:0 12px;font-size:14px}
 .lightbox .bar .btn.danger{color:#ff8a7d;border-color:#ff8a7d}
 .lightbox .bar .btn.danger.confirm{background:#c0392b;color:#fff}
 .lightbox .pic{flex:1;min-height:0;display:grid;place-items:center;overflow:hidden;touch-action:none}
-.lightbox .pic img{max-width:100%;max-height:100%;object-fit:contain;transform-origin:center center;will-change:transform;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.lightbox .stage{position:relative;transform-origin:center center;will-change:transform}
+.lightbox .stage img{display:block;width:100%;height:100%;max-width:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.lightbox .stage svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+.lightbox.drawing .pic{cursor:crosshair}
+.lightbox .bar .btn:disabled{opacity:.35}
+.lightbox .bar .btn.armed{background:#e5372b;border-color:#e5372b;color:#fff}
+.lightbox .hintz.live{color:#fff;font-weight:700}
+.photos button{position:relative}
+.photos .mk{position:absolute;right:4px;bottom:4px;min-width:22px;height:22px;padding:0 5px;border-radius:11px;background:#e5372b;color:#fff;font-size:13px;font-weight:700;display:grid;place-items:center;box-shadow:0 1px 3px rgba(0,0,0,.4)}
 .lightbox .hintz{color:#aaa;font-size:12px;text-align:center}
 
 .modal{position:fixed;inset:0;z-index:45;background:rgba(0,0,0,.5);display:grid;place-items:end center;
@@ -342,10 +350,10 @@ body.editing{overflow:hidden}
 <div class="lightbox" id="lb" hidden>
   <div class="bar">
     <span id="lbCap"></span>
-    <span class="row"><button class="btn danger" id="lbDel">Remove</button><button class="btn" id="lbClose">Close</button></span>
+    <span class="row"><button class="btn" id="lbArrow">↗ Arrow</button><button class="btn" id="lbUndo" disabled>Undo arrow</button><button class="btn danger" id="lbDel">Remove</button><button class="btn" id="lbClose">Close</button></span>
   </div>
-  <div class="pic" id="lbPic"><img id="lbImg" alt="" draggable="false"></div>
-  <div class="hintz">Pinch to zoom · double-tap to zoom in or out</div>
+  <div class="pic" id="lbPic"><div class="stage" id="lbStage"><img id="lbImg" alt="" draggable="false"><svg id="lbMarks" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"></svg></div></div>
+  <div class="hintz" id="lbHint">Pinch to zoom · double-tap to zoom in or out</div>
 </div>
 
 <div class="modal" id="ready" hidden role="dialog" aria-label="Report ready">
