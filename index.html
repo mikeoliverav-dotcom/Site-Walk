@@ -18,7 +18,7 @@
 :root{
   --bg:#f3f5f4; --surface:#ffffff; --ink:#14181b; --muted:#5a6064; --line:#cfd4d2;
   --accent:#c6f432; --accent-ink:#14181b; --accent-soft:#f6fbe2; --bar:#14181b; --bar-ink:#ffffff;
-  --danger:#b3261e; --ok:#1e7a44; --shadow:0 8px 28px rgba(0,0,0,.18);
+  --danger:#b3261e; --ok:#1e7a44; --issue:#d32f2f; --issue-soft:#fdecea; --shadow:0 8px 28px rgba(0,0,0,.18);
   --f:Arial,"Helvetica Neue",Helvetica,system-ui,sans-serif;
   --mono:ui-monospace,Menlo,Consolas,monospace;
   color-scheme:light;
@@ -26,7 +26,7 @@
 @media (prefers-color-scheme:dark){:root{
   --bg:#0e1112; --surface:#191d1f; --ink:#eef1ef; --muted:#a3aaa6; --line:#2e3437;
   --accent:#c6f432; --accent-ink:#14181b; --accent-soft:#232b14; --bar:#000000; --bar-ink:#ffffff;
-  --danger:#ff7a6e; --ok:#5cc08a; --shadow:0 8px 28px rgba(0,0,0,.6); color-scheme:dark}}
+  --danger:#ff7a6e; --ok:#5cc08a; --issue:#ff6b5e; --issue-soft:#3a1a18; --shadow:0 8px 28px rgba(0,0,0,.6); color-scheme:dark}}
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--f);font-size:16px;line-height:1.45;-webkit-text-size-adjust:100%}
 body{padding-bottom:calc(120px + env(safe-area-inset-bottom,0px))}
@@ -102,6 +102,7 @@ textarea.field{min-height:110px;resize:vertical}
 .pin{position:absolute;transform:translate(-50%,-100%);display:flex;flex-direction:column;align-items:center;border:0;background:none;padding:0}
 .pin span{display:grid;place-items:center;min-width:30px;height:30px;padding:0 6px;border-radius:15px;background:#c6f432;color:#14181b;font-weight:700;font-size:14px;border:2px solid #14181b;box-shadow:0 2px 6px rgba(0,0,0,.4)}
 .pin i{width:2px;height:10px;background:#000}
+.pin.issue span{background:#e5372b;color:#fff}
 .pin.sel span{background:#000;color:var(--accent);transform:scale(1.15)}
 
 .empty{padding:22px 18px;display:flex;flex-direction:column;gap:14px;align-items:flex-start}
@@ -117,6 +118,21 @@ textarea.field{min-height:110px;resize:vertical}
 .stop .num{display:grid;place-items:center;width:40px;height:40px;border-radius:20px;background:var(--accent);color:var(--accent-ink);font-weight:700}
 .stop .body{min-width:0;display:flex;flex-direction:column;gap:4px}
 .stop .zone{font-weight:700;overflow-wrap:anywhere}
+.stop.issue{border-left:5px solid var(--issue)}
+.stop.issue .num{background:var(--issue);color:#fff}
+.tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:2px 8px;border-radius:999px;vertical-align:2px;margin-left:6px}
+.tag.issue{background:var(--issue);color:#fff}
+.issuebox{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1.5px solid var(--line);border-radius:10px;cursor:pointer}
+.issuebox input{width:24px;height:24px;accent-color:var(--issue);flex:none}
+.issuebox b{display:block}
+.issuebox small{display:block;color:var(--muted);font-size:13px}
+.issuebox.on{border-color:var(--issue);background:var(--issue-soft)}
+.issuebox.on b{color:var(--issue)}
+.choice{display:flex;flex-direction:column;gap:8px}
+.choice label{display:flex;gap:12px;align-items:flex-start;padding:12px;border:1.5px solid var(--line);border-radius:10px;cursor:pointer;font-size:15px}
+.choice input{width:20px;height:20px;margin-top:2px;accent-color:var(--ink);flex:none}
+.choice small{display:block;color:var(--muted);font-size:13px}
+.choice label:has(input:checked){border-color:var(--ink)}
 .stop .zone.none{color:var(--muted);font-weight:400;font-style:italic}
 .stop .note{color:var(--muted);font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .stop .sf{font-size:12px;color:var(--muted);display:flex;gap:12px;flex-wrap:wrap;font-family:var(--mono)}
@@ -130,10 +146,22 @@ details.settings summary::after{content:"+";font-size:20px;line-height:1;color:v
 details.settings[open] summary::after{content:"−"}
 details.settings .in{padding:0 14px 14px;display:flex;flex-direction:column;gap:12px}
 
-.sheet{position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--surface);border-top:3px solid var(--accent);box-shadow:var(--shadow);border-radius:14px 14px 0 0;max-height:82vh;overflow-y:auto;
-  padding-top:10px;padding-bottom:calc(14px + env(safe-area-inset-bottom,0px));padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
-.sheet .in{max-width:900px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
-.sheet .top{display:flex;align-items:center;gap:10px}
+/* Main action pinned to the bottom, in thumb reach */
+.actionbar{position:fixed;left:0;right:0;bottom:0;z-index:15;background:var(--surface);border-top:1px solid var(--line);box-shadow:0 -4px 16px rgba(0,0,0,.08);
+  padding-top:10px;padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.actionbar .in{max-width:900px;margin:0 auto}
+.actionbar .btn{width:100%;min-height:56px;font-size:18px}
+/* Stop editor: full screen */
+.sheet{position:fixed;inset:0;z-index:20;background:var(--surface);overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
+  padding-bottom:calc(24px + env(safe-area-inset-bottom,0px));padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.sheet .in{max-width:900px;margin:0 auto;display:flex;flex-direction:column;gap:14px;min-height:100%}
+.sheet .top{display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:2;background:var(--bar);color:var(--bar-ink);border-bottom:3px solid var(--accent);
+  margin-left:calc(-1 * max(16px,env(safe-area-inset-left,0px)));margin-right:calc(-1 * max(16px,env(safe-area-inset-right,0px)));
+  padding:calc(8px + env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) 8px max(16px,env(safe-area-inset-left,0px))}
+.sheet .top .when{color:#b9c0bd!important}
+.sheet .top .btn{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.sheet textarea.field{min-height:38vh}
+body.editing{overflow:hidden}
 .sheet .top .n{font-size:22px;font-weight:700}
 .sheet .top .when{font-size:12px;color:var(--muted);font-family:var(--mono)}
 .sheet .top .btn{margin-left:auto}
@@ -190,6 +218,10 @@ details.settings .in{padding:0 14px 14px;display:flex;flex-direction:column;gap:
       <label class="fl">Surveyor
         <input class="field" id="nsSurveyor" maxlength="60" placeholder="Your name">
       </label>
+      <div class="choice" role="radiogroup" aria-label="Site plan">
+        <label><input type="radio" name="nsMode" id="nsModePlan" value="plan" checked><span><b>I have a plan</b><small>Load a PDF or image and drop pins on it.</small></span></label>
+        <label><input type="radio" name="nsMode" id="nsModeNoPlan" value="noplan"><span><b>No plan</b><small>Add stops one after another and name each location as you go.</small></span></label>
+      </div>
       <div class="row"><button class="btn primary" type="submit">Create survey</button><button class="btn" type="button" id="nsCancel">Cancel</button></div>
     </form>
     <div class="slist" id="surveyList"></div>
@@ -206,10 +238,9 @@ details.settings .in{padding:0 14px 14px;display:flex;flex-direction:column;gap:
   <main class="wrap">
     <div>
       <input id="svName" aria-label="Survey name" maxlength="90" placeholder="Name this survey">
-      <div class="meta"><span><b id="cStops">0</b> stops</span><span><b id="cPhotos">0</b> photos</span><span id="svSurveyor"></span></div>
+      <div class="meta"><span><b id="cStops">0</b> stops</span><span><b id="cPhotos">0</b> photos</span><span id="cIssuesWrap" hidden><b id="cIssues" style="color:var(--issue)">0</b><span id="cIssuesLbl"> issues</span></span><span id="svSurveyor"></span></div>
     </div>
     <div class="row">
-      <button class="btn primary" id="addBtn">+ Drop pin</button>
       <span class="spacer"></span>
       <button class="btn dark" id="reportBtn" disabled>Build report (PDF)</button>
     </div>
@@ -230,6 +261,7 @@ details.settings .in{padding:0 14px 14px;display:flex;flex-direction:column;gap:
       </div>
     </details>
   </main>
+  <div class="actionbar" id="actionBar"><div class="in"><button class="btn primary" id="addBtn">+ Drop pin</button></div></div>
 </div>
 
 <input type="file" id="mapFile" accept="image/*,application/pdf,.pdf" hidden>
@@ -248,9 +280,10 @@ details.settings .in{padding:0 14px 14px;display:flex;flex-direction:column;gap:
       <button class="btn primary" id="sCam">Take photo</button>
       <button class="btn" id="sLib">Add from library</button>
     </div>
+    <label class="issuebox" id="sIssueBox"><input type="checkbox" id="sIssue"><span><b>Issue</b><small>Flag this stop as a problem to resolve. Its pin turns red and it's listed under Issues in the report.</small></span></label>
     <div class="status" id="sStatus"></div>
     <div class="photos" id="sPhotos"></div>
-    <label class="fl">Zone / landmark
+    <label class="fl">Location
       <input class="field" id="sZone" maxlength="90" placeholder="e.g. Main viewing deck" autocomplete="off">
     </label>
     <div class="zchips" id="sChips"></div>

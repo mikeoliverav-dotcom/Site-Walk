@@ -2,7 +2,7 @@
 /* Site Walk — offline site survey app.
    Everything is stored on the device in IndexedDB. No server, no account. */
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.2.0';
 /* Report header/footer text. Set `site` to a web address to show it in the footer. */
 const BRAND = { name: 'Site Walk', tagline: 'Survey report', site: '' };
 
@@ -130,10 +130,11 @@ async function renderList() {
     L.innerHTML = S.surveys.map(s => {
       const st = allStops.filter(p => p.surveyId === s.id);
       const ph = st.reduce((a, p) => a + (p.photos?.length || 0), 0);
+      const iss = st.filter(p => p.issue).length;
       return `<button class="scard" data-id="${s.id}">
         <span class="sname">${esc(s.name || 'Untitled survey')}</span>
         <span class="smeta">${esc(fmtDate(s.createdAt, false))}${s.surveyor ? ' · ' + esc(s.surveyor) : ''}</span>
-        <span class="scount"><b>${st.length}</b> stops · <b>${ph}</b> photos${s.mapId ? '' : ' · no plan'}</span></button>`;
+        <span class="scount"><b>${st.length}</b> stops · <b>${ph}</b> photos${iss ? ` · <b style="color:var(--issue)">${iss}</b> issue${iss === 1 ? '' : 's'}` : ''}${s.mapId ? '' : ' · no plan'}</span></button>`;
     }).join('');
     L.querySelectorAll('.scard').forEach(b => (b.onclick = () => openSurvey(b.dataset.id)));
   }
@@ -157,9 +158,10 @@ $('newForm').addEventListener('submit', async (e) => {
   const name = $('nsName').value.trim() || 'Untitled survey';
   const surveyor = $('nsSurveyor').value.trim(); ls.set('surveyor', surveyor);
   const now = new Date().toISOString();
-  const s = { id: uid(), name, surveyor, createdAt: now, updatedAt: now, mapId: null, mapW: 0, mapH: 0, noMap: false, gps: true };
+  const noMap = $('nsModeNoPlan').checked;
+  const s = { id: uid(), name, surveyor, createdAt: now, updatedAt: now, mapId: null, mapW: 0, mapH: 0, noMap, gps: true };
   try { await idb.put('surveys', s); } catch (err) { return toast(storageMsg(err)); }
-  $('newForm').hidden = true; $('nsName').value = '';
+  $('newForm').hidden = true; $('nsName').value = ''; $('nsModePlan').checked = true;
   openSurvey(s.id);
 });
 
@@ -183,8 +185,9 @@ function renderSurvey(full) {
   $('cStops').textContent = S.stops.length;
   $('cPhotos').textContent = S.stops.reduce((a, p) => a + (p.photos?.length || 0), 0);
   $('svSurveyor').textContent = s.surveyor ? 'Surveyor: ' + s.surveyor : '';
+  renderIssueCount();
   const hasMap = !!s.mapId;
-  $('addBtn').hidden = !hasMap && !s.noMap;
+  $('actionBar').hidden = !hasMap && !s.noMap;
   $('addBtn').textContent = hasMap ? (S.armed ? 'Tap the plan… (cancel)' : '+ Drop pin') : '+ New stop';
   $('addBtn').classList.toggle('armed', S.armed);
   $('addBtn').classList.toggle('primary', !S.armed);
@@ -239,9 +242,9 @@ function renderMap() {
   for (const p of S.stops) {
     if (p.x == null) continue;
     const b = document.createElement('button');
-    b.className = 'pin' + (p.id === S.selId ? ' sel' : '');
+    b.className = 'pin' + (p.issue ? ' issue' : '') + (p.id === S.selId ? ' sel' : '');
     b.style.left = (p.x * 100) + '%'; b.style.top = (p.y * 100) + '%';
-    b.setAttribute('aria-label', 'Stop ' + p.n);
+    b.setAttribute('aria-label', 'Stop ' + p.n + (p.issue ? ' (issue)' : ''));
     b.innerHTML = `<span>${p.n}</span><i></i>`;
     b.onclick = (e) => { e.stopPropagation(); if (!S.armed) openStop(p.id); };
     inner.appendChild(b);
@@ -267,20 +270,20 @@ function onMapTap(e) {
 $('addBtn').onclick = () => {
   if (S.cur.mapId) {
     S.armed = !S.armed; renderSurvey();
-    if (S.armed) $('mapPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  } else createStop(null, null);
+    if (S.armed) backToPlan();
+  } else { $('addBtn').disabled = true; createStop(null, null).finally(() => { $('addBtn').disabled = false; }); }
 };
 
 function renderStops() {
   const L = $('stopList');
   if (!S.stops.length) {
-    L.innerHTML = `<div class="listempty">No stops yet. ${S.cur.mapId ? 'Tap <b>Drop pin</b>, then tap your spot on the plan.' : (S.cur.noMap ? 'Tap <b>New stop</b> each time you reach a new landmark.' : 'Load the plan above, or walk without one.')}</div>`;
+    L.innerHTML = `<div class="listempty">No stops yet. ${S.cur.mapId ? 'Tap <b>Drop pin</b>, then tap your spot on the plan.' : (S.cur.noMap ? 'Tap <b>New stop</b> each time you reach a new location.' : 'Load the plan above, or walk without one.')}</div>`;
     return;
   }
   L.innerHTML = S.stops.map(p => {
     const ph = p.photos || [];
-    return `<button class="stop${p.id === S.selId ? ' sel' : ''}" data-id="${p.id}"><span class="num">${p.n}</span><span class="body">
-      <span class="zone ${p.zone ? '' : 'none'}">${esc(p.zone || 'No zone named')}</span>
+    return `<button class="stop${p.issue ? ' issue' : ''}${p.id === S.selId ? ' sel' : ''}" data-id="${p.id}"><span class="num">${p.n}</span><span class="body">
+      <span class="zone ${p.zone ? '' : 'none'}">${esc(p.zone || 'No location named')}${p.issue ? '<span class="tag issue">Issue</span>' : ''}</span>
       ${p.note ? `<span class="note">${esc(p.note)}</span>` : ''}
       ${ph.length ? `<span class="thumbs">${ph.slice(0, 8).map(id => `<img data-blob="${id}" alt="">`).join('')}</span>` : ''}
       <span class="sf"><span>${esc(fmtDate(p.createdAt))}</span><span>${ph.length} photo${ph.length === 1 ? '' : 's'}</span>${p.x == null && S.cur.mapId ? '<span>no pin</span>' : ''}</span>
@@ -322,10 +325,11 @@ twoTap($('delSurvey'), 'Delete survey', 'Tap again to delete for good', async ()
 /* ---------------- stops ---------------- */
 async function createStop(x, y) {
   const n = S.stops.reduce((m, p) => Math.max(m, p.n || 0), 0) + 1;
-  const st = { id: uid(), surveyId: S.cur.id, n, x, y, zone: S.lastZone || '', note: '', photos: [], createdAt: new Date().toISOString(), gps: null };
+  const st = { id: uid(), surveyId: S.cur.id, n, x, y, zone: S.cur.mapId ? (S.lastZone || '') : '', note: '', photos: [], issue: false, createdAt: new Date().toISOString(), gps: null };
   try { await idb.put('stops', st); } catch (e) { renderSurvey(); return toast(storageMsg(e)); }
   S.stops.push(st); await touch();
   S.selId = st.id; renderSurvey(); openSheet();
+  if (!S.cur.mapId) { const z = $('sZone'); z.focus(); }
   if (S.cur.gps !== false && navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(async pos => {
       const cur = S.stops.find(p => p.id === st.id); if (!cur) return;
@@ -358,15 +362,25 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 window.addEventListener('pagehide', flushSaves);
 
 function openStop(id) { flushSaves(); S.selId = id; S.armed = false; renderSurvey(); openSheet(); }
-function openSheet() { $('sheet').hidden = false; renderSheet(true); }
-function closeSheet() { flushSaves(); $('sheet').hidden = true; S.selId = null; }
-$('sClose').onclick = () => { closeSheet(); renderSurvey(); };
+function openSheet() { $('sheet').hidden = false; $('sheet').scrollTop = 0; document.body.classList.add('editing'); renderSheet(true); }
+function closeSheet() { flushSaves(); $('sheet').hidden = true; document.body.classList.remove('editing'); S.selId = null; }
+$('sClose').onclick = () => { closeSheet(); renderSurvey(); backToPlan(); };
+/* After Done: show the plan (or, with no plan, the top of the survey with + New stop). */
+function backToPlan() {
+  requestAnimationFrame(() => {
+    const target = S.cur && S.cur.mapId ? $('mapPanel') : null;
+    if (!target) { window.scrollTo({ top: 0 }); return; }
+    const bar = document.querySelector('#surveyView .topbar');
+    const y = target.getBoundingClientRect().top + window.scrollY - (bar ? bar.offsetHeight : 0) - 8;
+    window.scrollTo({ top: Math.max(0, y) });
+  });
+}
 
 function renderGps(p) {
   $('sGps').textContent = p.gps ? `GPS ${p.gps.lat}, ${p.gps.lon} (±${p.gps.acc} m)` : (S.cur.gps !== false ? 'GPS: waiting for a fix (optional)' : '');
 }
 function renderSheet(full) {
-  const p = sel(); if (!p) { $('sheet').hidden = true; return; }
+  const p = sel(); if (!p) { $('sheet').hidden = true; document.body.classList.remove('editing'); return; }
   $('sNum').textContent = 'Stop ' + p.n;
   $('sWhen').textContent = fmtDate(p.createdAt);
   if (full || document.activeElement !== $('sZone')) $('sZone').value = p.zone || '';
@@ -379,6 +393,7 @@ function renderSheet(full) {
   $('sChips').innerHTML = zones.map(z => `<button class="zchip" type="button">${esc(z)}</button>`).join('');
   $('sChips').querySelectorAll('.zchip').forEach((c, i) => (c.onclick = () => { $('sZone').value = zones[i]; setZone(zones[i]); }));
   renderGps(p);
+  $('sIssue').checked = !!p.issue; $('sIssueBox').classList.toggle('on', !!p.issue);
   if (full) { $('sStatus').textContent = ''; $('sStatus').className = 'status'; $('sSaved').textContent = ''; }
 }
 function setZone(v) { const p = sel(); if (!p) return; p.zone = v; S.lastZone = v; schedule(p); renderStops(); }
@@ -386,6 +401,19 @@ $('sZone').addEventListener('input', e => setZone(e.target.value.trim()));
 $('sNote').addEventListener('input', e => { const p = sel(); if (!p) return; p.note = e.target.value; schedule(p); });
 $('sZone').addEventListener('blur', () => { flushSaves(); });
 $('sNote').addEventListener('blur', () => { flushSaves(); renderStops(); });
+
+function renderIssueCount() {
+  const n = S.stops.filter(p => p.issue).length;
+  $('cIssues').textContent = n; $('cIssuesWrap').hidden = !n;
+  $('cIssuesLbl').textContent = n === 1 ? ' issue' : ' issues';
+}
+$('sIssue').onchange = async () => {
+  const p = sel(); if (!p) return;
+  p.issue = $('sIssue').checked;
+  $('sIssueBox').classList.toggle('on', p.issue);
+  await saveStop(p);
+  renderMap(); renderStops(); renderIssueCount();
+};
 
 twoTap($('sDel'), 'Delete stop', 'Tap again to delete', async () => {
   const p = sel(); if (!p) return;
@@ -537,9 +565,9 @@ function pinPainter(stops) {
       ctx.strokeStyle = '#000'; ctx.lineWidth = Math.max(2, r * 0.18);
       ctx.beginPath(); ctx.moveTo(x, y + r); ctx.lineTo(x, p.y * h); ctx.stroke();
       ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fillStyle = '#C6F432'; ctx.fill();
+      ctx.fillStyle = p.issue ? '#E5372B' : '#C6F432'; ctx.fill();
       ctx.lineWidth = Math.max(2, r * 0.2); ctx.strokeStyle = '#14181B'; ctx.stroke();
-      ctx.fillStyle = '#000'; ctx.fillText(String(p.n), x, y + r * 0.05);
+      ctx.fillStyle = p.issue ? '#fff' : '#000'; ctx.fillText(String(p.n), x, y + r * 0.05);
     }
   };
 }
@@ -548,9 +576,10 @@ async function buildReport(progress) {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: 'pt', format: 'letter', compress: true });
   const W = 612, H = 792, M = 54, CW = W - 2 * M, CT = 64, BOTTOM = H - 58;
-  const ACCENT = [198, 244, 50], BLACK = [20, 24, 27], MID = [89, 94, 98], DIV = [204, 208, 210], LO = [246, 251, 226];
+  const ACCENT = [198, 244, 50], BLACK = [20, 24, 27], MID = [89, 94, 98], DIV = [204, 208, 210], LO = [246, 251, 226], RED = [211, 47, 47], RED_SOFT = [253, 236, 234];
   const s = S.cur, stops = [...S.stops].sort((a, b) => a.n - b.n);
   const totalPhotos = stops.reduce((a, p) => a + (p.photos?.length || 0), 0);
+  const issues = stops.filter(p => p.issue);
   let y = CT;
   const ensure = (h) => { if (y + h > BOTTOM) { doc.addPage(); y = CT; return true; } return false; };
   const sectionHead = (t) => {
@@ -568,7 +597,7 @@ async function buildReport(progress) {
   doc.setFontSize(21); doc.setTextColor(255, 255, 255);
   const tl = doc.splitTextToSize(s.name || 'Untitled survey', CW - 36).slice(0, 2);
   doc.text(tl, M + 18, y + 52);
-  const meta = [['Surveyor', s.surveyor || '—'], ['Date', fmtDate(s.createdAt, false)], ['Stops', String(stops.length)], ['Photos', String(totalPhotos)]];
+  const meta = [['Surveyor', s.surveyor || '—'], ['Date', fmtDate(s.createdAt, false)], ['Stops', String(stops.length)], ['Photos', String(totalPhotos)], ['Issues', String(issues.length)]];
   let mx = M + 18; doc.setFontSize(9);
   for (const [k, v] of meta) {
     doc.setFont('helvetica', 'normal'); doc.setTextColor(170, 170, 170); doc.text(k.toUpperCase(), mx, y + 88, { charSpace: 0.6 });
@@ -592,15 +621,48 @@ async function buildReport(progress) {
       doc.setDrawColor(...DIV); doc.setLineWidth(0.75); doc.rect(x, y, w, h);
       y += h + 12;
       doc.setFont('helvetica', 'italic'); doc.setFontSize(8.5); doc.setTextColor(...MID);
-      doc.text('Numbered pins mark where each stop was documented.', M, y + 4);
+      doc.text('Numbered pins mark where each stop was documented.' + (issues.length ? ' Red pins are issues.' : ''), M, y + 4);
       y += 18;
     }
   }
 
-  // Summary table
   if (s.mapId) { doc.addPage(); y = CT; }
+
+  // Issues
+  if (issues.length) {
+    ensure(40);
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(...RED);
+    doc.text(`Issues (${issues.length})`, M, y + 12);
+    doc.setDrawColor(...RED); doc.setLineWidth(3); doc.line(M, y + 18, M + CW, y + 18);
+    y += 30;
+    for (const p of issues) {
+      doc.setFontSize(10);
+      let nl = p.note ? doc.splitTextToSize(p.note, CW - 44) : [];
+      if (nl.length > 6) { nl = nl.slice(0, 6); nl[5] = nl[5].replace(/.{0,3}$/, '…'); }
+      const zl = doc.splitTextToSize(p.zone || 'No location named', CW - 44);
+      const h = 14 + zl.length * 13 + nl.length * 13 + 14;
+      ensure(Math.min(h, 120));
+      const top = y;
+      doc.setFillColor(...RED_SOFT); doc.rect(M, top, CW, h, 'F');
+      doc.setFillColor(...RED); doc.rect(M, top, 3, h, 'F');
+      doc.circle(M + 20, top + 17, 9, 'F');
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(255, 255, 255);
+      doc.text(String(p.n), M + 20, top + 20.2, { align: 'center' });
+      doc.setFontSize(10.5); doc.setTextColor(...BLACK);
+      y = top + 20;
+      for (const l of zl) { doc.text(l, M + 38, y); y += 13; }
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+      for (const l of nl) { doc.text(l, M + 38, y); y += 13; }
+      doc.setFontSize(8.5); doc.setTextColor(...MID);
+      doc.text(`Stop ${p.n} · ${p.photos?.length || 0} photo${(p.photos?.length || 0) === 1 ? '' : 's'} · details below`, M + 38, y); 
+      y = Math.max(y, top + h) + 8;
+    }
+    y += 16;
+  }
+
+  // Summary table
   sectionHead('Stop summary');
-  const cols = [{ t: '#', w: 30 }, { t: 'Zone / landmark', w: 150 }, { t: 'Notes', w: 270 }, { t: 'Photos', w: 54 }];
+  const cols = [{ t: '#', w: 30 }, { t: 'Location', w: 150 }, { t: 'Notes', w: 270 }, { t: 'Photos', w: 54 }];
   const head = () => {
     doc.setFillColor(...BLACK); doc.rect(M, y, CW, 22, 'F');
     doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(255, 255, 255);
@@ -615,12 +677,13 @@ async function buildReport(progress) {
     if (nl.length > 3) { nl = nl.slice(0, 3); nl[2] = nl[2].replace(/.{0,3}$/, '…'); }
     const rh = Math.max(zl.length, nl.length) * 11.5 + 11;
     if (ensure(rh)) head();
-    if (i % 2 === 0) { doc.setFillColor(...LO); doc.rect(M, y, CW, rh, 'F'); }
+    if (p.issue) { doc.setFillColor(...RED_SOFT); doc.rect(M, y, CW, rh, 'F'); doc.setFillColor(...RED); doc.rect(M, y, 3, rh, 'F'); }
+    else if (i % 2 === 0) { doc.setFillColor(...LO); doc.rect(M, y, CW, rh, 'F'); }
     doc.setDrawColor(...DIV); doc.setLineWidth(0.5); doc.line(M, y + rh, M + CW, y + rh);
     doc.setTextColor(...BLACK);
     let cx = M;
-    doc.setFont('helvetica', 'bold'); doc.text(String(p.n), cx + 7, y + 15); cx += cols[0].w;
-    doc.text(zl, cx + 7, y + 15, { lineHeightFactor: 1.28 }); cx += cols[1].w;
+    doc.setFont('helvetica', 'bold'); if (p.issue) doc.setTextColor(...RED); doc.text(String(p.n), cx + 7, y + 15); cx += cols[0].w;
+    doc.text(zl, cx + 7, y + 15, { lineHeightFactor: 1.28 }); doc.setTextColor(...BLACK); cx += cols[1].w;
     doc.setFont('helvetica', 'normal'); doc.text(nl, cx + 7, y + 15, { lineHeightFactor: 1.28 }); cx += cols[2].w;
     doc.text(String(p.photos?.length || 0), cx + 7, y + 15);
     y += rh;
@@ -632,19 +695,25 @@ async function buildReport(progress) {
   let done = 0;
   for (const p of stops) {
     ensure(70);
-    doc.setFillColor(...LO); doc.rect(M, y, CW, 28, 'F');
-    doc.setDrawColor(...BLACK); doc.setLineWidth(1.5); doc.line(M, y, M + CW, y);
+    doc.setFillColor(...(p.issue ? RED_SOFT : LO)); doc.rect(M, y, CW, 28, 'F');
+    doc.setDrawColor(...(p.issue ? RED : BLACK)); doc.setLineWidth(p.issue ? 2.5 : 1.5); doc.line(M, y, M + CW, y);
     doc.setFont('helvetica', 'bold'); doc.setFontSize(11.5); doc.setTextColor(...BLACK);
-    doc.text(doc.splitTextToSize(`Stop ${p.n} — ${p.zone || 'No zone named'}`, CW - 130)[0], M + 10, y + 18);
+    doc.text(doc.splitTextToSize(`Stop ${p.n} — ${p.zone || 'No location named'}`, p.issue ? CW - 180 : CW - 130)[0], M + 10, y + 18);
     doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(...MID);
     doc.text(fmtDate(p.createdAt), M + CW - 10, y + 18, { align: 'right' });
+    if (p.issue) {
+      const dw = doc.getTextWidth(fmtDate(p.createdAt));
+      doc.setFont('helvetica', 'bold'); doc.setTextColor(...RED);
+      doc.text('ISSUE', M + CW - 22 - dw, y + 18, { align: 'right', charSpace: 0.8 });
+      doc.setFont('helvetica', 'normal'); doc.setTextColor(...MID);
+    }
     y += 38;
     const sub = [`${p.photos?.length || 0} photo${(p.photos?.length || 0) === 1 ? '' : 's'}`];
     if (p.gps) sub.push(`GPS ${p.gps.lat}, ${p.gps.lon} (±${p.gps.acc} m)`);
     if (s.mapId && p.x == null) sub.push('not pinned on plan');
     doc.text(sub.join('  ·  '), M, y); y += 16;
     if (p.note) {
-      doc.setFontSize(10.5); doc.setTextColor(...BLACK);
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(10.5); doc.setTextColor(...BLACK);
       for (const line of doc.splitTextToSize(p.note, CW)) { ensure(15); doc.text(line, M, y + 4); y += 14.5; }
       y += 8;
     }

@@ -29,9 +29,11 @@ Wait until the top-right label says **Ready offline**. From then on it works wit
 
 ## 3. On site
 
-1. **+ New survey** → name the site → **Load plan** (a PDF or an image; for a multi-sheet PDF, tap the sheet you want).
-2. **+ Drop pin** → tap where you're standing on the plan.
-3. **Take photo** / **Add from library**, then fill in the zone and notes. Everything saves as you type. The zone carries over to the next pin.
+1. **+ New survey** → name the site → choose **I have a plan** or **No plan**.
+   - **With a plan:** **Load plan** (a PDF or an image; for a multi-sheet PDF, tap the sheet you want), then tap **+ Drop pin** (the big button at the bottom of the screen) and tap where you're standing on the plan.
+   - **No plan:** there's no plan window. Tap **+ New stop** (bottom of the screen) at each spot and type the location name.
+2. **Take photo** / **Add from library**, then fill in the location and notes. Everything saves as you type. With a plan, the location carries over to the next pin.
+3. Tick **Issue** on any stop that's a problem. Its pin turns red, and the report lists it under **Issues**.
 4. GPS is recorded with each stop when available. This works offline too, and you can turn it off in Survey settings.
 5. **Build report (PDF)** → **Share…** to Mail, Teams, Files or AirDrop. If you're offline, save it to Files and send it later.
 6. Once the report is shared, delete the survey (Survey settings → Delete survey) to free up space.
