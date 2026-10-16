@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Site Walk</title>
+<meta name="description" content="Offline site survey tool: pin stops on a plan, add photos and notes, share a PDF report.">
+<meta name="theme-color" content="#14181b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Site Walk">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<style>
+/* Layout: one-column field tool. Survey list → survey (plan with numbered pins, stop log, slide-up stop editor). */
+:root{
+  --bg:#f3f5f4; --surface:#ffffff; --ink:#14181b; --muted:#5a6064; --line:#cfd4d2;
+  --accent:#c6f432; --accent-ink:#14181b; --accent-soft:#f6fbe2; --bar:#14181b; --bar-ink:#ffffff;
+  --danger:#b3261e; --ok:#1e7a44; --shadow:0 8px 28px rgba(0,0,0,.18);
+  --f:Arial,"Helvetica Neue",Helvetica,system-ui,sans-serif;
+  --mono:ui-monospace,Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0e1112; --surface:#191d1f; --ink:#eef1ef; --muted:#a3aaa6; --line:#2e3437;
+  --accent:#c6f432; --accent-ink:#14181b; --accent-soft:#232b14; --bar:#000000; --bar-ink:#ffffff;
+  --danger:#ff7a6e; --ok:#5cc08a; --shadow:0 8px 28px rgba(0,0,0,.6); color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--f);font-size:16px;line-height:1.45;-webkit-text-size-adjust:100%}
+body{padding-bottom:calc(120px + env(safe-area-inset-bottom,0px))}
+img{max-width:100%}
+[hidden]{display:none!important}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer;-webkit-tap-highlight-color:transparent}
+:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+
+.topbar{position:sticky;top:0;z-index:10;background:var(--bar);color:var(--bar-ink);padding-top:env(safe-area-inset-top,0px);border-bottom:3px solid var(--accent)}
+.topbar .in{max-width:900px;margin:0 auto;display:flex;align-items:center;gap:10px;min-height:52px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.brand{font-weight:700;font-size:18px;letter-spacing:.01em}
+.brand span{color:var(--accent)}
+.back{background:none;border:0;color:var(--accent);font-weight:700;font-size:16px;padding:8px 4px;min-height:44px}
+.chip{margin-left:auto;font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid #555;color:#ddd;white-space:nowrap}
+.chip.off{border-color:var(--accent);color:var(--accent)}
+
+.wrap{max-width:900px;margin:0 auto;display:flex;flex-direction:column;gap:16px;padding-block:16px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:46px;padding:0 16px;border-radius:8px;border:1.5px solid var(--line);background:var(--surface);font-weight:700;font-size:15px;color:var(--ink)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.dark{background:var(--ink);border-color:var(--ink);color:var(--bg)}
+.btn.armed{background:var(--ink);border-color:var(--ink);color:var(--bg)}
+.btn.danger{color:var(--danger);border-color:var(--danger);background:transparent}
+.btn.danger.confirm{background:var(--danger);color:#fff}
+.btn:disabled{opacity:.45;cursor:default}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.spacer{flex:1}
+
+.banner{background:var(--accent-soft);border:1px solid var(--accent);border-radius:8px;padding:12px 14px;font-size:14px;display:flex;gap:10px;align-items:flex-start}
+.banner p{margin:0;flex:1;min-width:0}
+.banner button{background:none;border:0;font-weight:700;color:var(--muted);padding:2px 4px}
+
+h1.pg{font-size:26px;margin:0;line-height:1.15;text-wrap:balance}
+.sub{color:var(--muted);font-size:14px;margin:0}
+.sec{font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:6px 0 0;display:flex;gap:10px;align-items:baseline;border-bottom:2px solid var(--accent);padding-bottom:6px}
+
+.form{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:12px}
+label.fl{display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.field{width:100%;border:1.5px solid var(--line);border-radius:8px;background:var(--bg);padding:11px 12px;font-size:16px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--ink)}
+.field:focus{border-color:var(--ink);outline:none}
+textarea.field{min-height:110px;resize:vertical}
+.check{display:flex;gap:10px;align-items:center;font-size:15px}
+.check input{width:22px;height:22px;accent-color:var(--accent)}
+
+.slist{display:flex;flex-direction:column;gap:10px}
+.scard{display:flex;flex-direction:column;gap:3px;text-align:left;width:100%;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px;min-width:0}
+.scard .sname{font-weight:700;font-size:17px;overflow-wrap:anywhere}
+.scard .smeta,.scard .scount{font-size:14px;color:var(--muted)}
+.scard .scount b{color:var(--ink);font-variant-numeric:tabular-nums}
+.emptycard{border:1.5px dashed var(--line);border-radius:10px;padding:18px;color:var(--muted)}
+.emptycard h3{margin:0 0 6px;color:var(--ink);font-size:18px}
+.emptycard p{margin:0;max-width:60ch}
+.foot{font-size:12px;color:var(--muted);font-family:var(--mono)}
+
+#svName{font-size:24px;font-weight:700;background:transparent;border:0;border-bottom:2px dashed transparent;padding:2px 0;width:100%;color:var(--ink)}
+#svName:focus{border-bottom-color:var(--accent);outline:none}
+.meta{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:14px;color:var(--muted)}
+.meta b{color:var(--ink);font-variant-numeric:tabular-nums}
+
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.mapbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line)}
+.hint{font-size:14px;color:var(--muted)}
+.hint.live{color:var(--ink);font-weight:700}
+.zoom{display:flex;align-items:center;gap:6px;margin-left:auto;font-family:var(--mono);font-size:13px;color:var(--muted)}
+.zoom button{width:40px;height:40px;border-radius:8px;border:1px solid var(--line);background:var(--bg);font-size:20px;font-weight:700}
+.mapscroll{overflow:auto;max-height:68vh;background:var(--bg);-webkit-overflow-scrolling:touch}
+.mapinner{position:relative;width:100%}
+.mapinner img{display:block;width:100%;max-width:none;height:auto;user-select:none;-webkit-user-select:none;-webkit-user-drag:none;-webkit-touch-callout:none}
+.mapinner.armed{cursor:crosshair;outline:3px solid var(--accent);outline-offset:-3px}
+.pin{position:absolute;transform:translate(-50%,-100%);display:flex;flex-direction:column;align-items:center;border:0;background:none;padding:0}
+.pin span{display:grid;place-items:center;min-width:30px;height:30px;padding:0 6px;border-radius:15px;background:#c6f432;color:#14181b;font-weight:700;font-size:14px;border:2px solid #14181b;box-shadow:0 2px 6px rgba(0,0,0,.4)}
+.pin i{width:2px;height:10px;background:#000}
+.pin.sel span{background:#000;color:var(--accent);transform:scale(1.15)}
+
+.empty{padding:22px 18px;display:flex;flex-direction:column;gap:14px;align-items:flex-start}
+.empty h2{font-size:20px;margin:0}
+.empty ol{margin:0;padding-left:20px;color:var(--muted);display:flex;flex-direction:column;gap:6px;max-width:60ch}
+.sheets{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;width:100%}
+.sheets button{display:flex;flex-direction:column;gap:4px;align-items:center;padding:6px;border:1px solid var(--line);border-radius:8px;background:var(--bg);min-width:0}
+.sheets canvas{width:100%;height:auto;border-radius:4px;background:#fff}
+
+.stops{display:flex;flex-direction:column;gap:10px}
+.stop{display:grid;grid-template-columns:44px 1fr;gap:12px;padding:12px;background:var(--surface);border:1px solid var(--line);border-radius:10px;text-align:left;width:100%}
+.stop.sel{border-color:var(--ink);box-shadow:0 0 0 2px var(--accent)}
+.stop .num{display:grid;place-items:center;width:40px;height:40px;border-radius:20px;background:var(--accent);color:var(--accent-ink);font-weight:700}
+.stop .body{min-width:0;display:flex;flex-direction:column;gap:4px}
+.stop .zone{font-weight:700;overflow-wrap:anywhere}
+.stop .zone.none{color:var(--muted);font-weight:400;font-style:italic}
+.stop .note{color:var(--muted);font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.stop .sf{font-size:12px;color:var(--muted);display:flex;gap:12px;flex-wrap:wrap;font-family:var(--mono)}
+.thumbs{display:flex;gap:6px;overflow-x:auto}
+.thumbs img{width:56px;height:56px;object-fit:cover;border-radius:6px;flex:none;background:var(--bg)}
+.listempty{padding:16px;color:var(--muted);border:1.5px dashed var(--line);border-radius:10px;font-size:15px}
+
+details.settings{background:var(--surface);border:1px solid var(--line);border-radius:10px}
+details.settings summary{padding:14px;font-weight:700;cursor:pointer;list-style:none;display:flex;justify-content:space-between}
+details.settings summary::after{content:"+";font-size:20px;line-height:1;color:var(--muted)}
+details.settings[open] summary::after{content:"−"}
+details.settings .in{padding:0 14px 14px;display:flex;flex-direction:column;gap:12px}
+
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--surface);border-top:3px solid var(--accent);box-shadow:var(--shadow);border-radius:14px 14px 0 0;max-height:82vh;overflow-y:auto;
+  padding-top:10px;padding-bottom:calc(14px + env(safe-area-inset-bottom,0px));padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.sheet .in{max-width:900px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+.sheet .top{display:flex;align-items:center;gap:10px}
+.sheet .top .n{font-size:22px;font-weight:700}
+.sheet .top .when{font-size:12px;color:var(--muted);font-family:var(--mono)}
+.sheet .top .btn{margin-left:auto}
+.zchips{display:flex;flex-wrap:wrap;gap:6px}
+.zchip{border:1px solid var(--line);background:var(--bg);border-radius:999px;padding:4px 12px;font-size:14px;min-height:34px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.photos{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px}
+.photos button{padding:0;border:0;background:var(--bg);border-radius:8px;overflow:hidden;aspect-ratio:1;max-width:100%}
+.photos img{width:100%;height:100%;object-fit:cover;display:block}
+.status{font-size:14px;min-height:20px;color:var(--muted)}
+.status.err{color:var(--danger)} .status.ok{color:var(--ok)}
+.saved{font-size:12px;color:var(--muted);font-family:var(--mono)}
+.gps{font-size:12px;color:var(--muted);font-family:var(--mono)}
+
+.lightbox{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.94);display:flex;flex-direction:column;
+  padding:calc(12px + env(safe-area-inset-top,0px)) max(12px,env(safe-area-inset-right,0px)) calc(12px + env(safe-area-inset-bottom,0px)) max(12px,env(safe-area-inset-left,0px))}
+.lightbox .bar{display:flex;gap:8px;justify-content:space-between;align-items:center;color:#fff;flex-wrap:wrap}
+.lightbox .bar .btn{background:#222;border-color:#444;color:#fff}
+.lightbox .bar .btn.danger{color:#ff8a7d;border-color:#ff8a7d}
+.lightbox .bar .btn.danger.confirm{background:#c0392b;color:#fff}
+.lightbox .pic{flex:1;min-height:0;display:grid;place-items:center}
+.lightbox .pic img{max-width:100%;max-height:100%;object-fit:contain}
+
+.modal{position:fixed;inset:0;z-index:45;background:rgba(0,0,0,.5);display:grid;place-items:end center;
+  padding-left:max(12px,env(safe-area-inset-left,0px));padding-right:max(12px,env(safe-area-inset-right,0px));padding-bottom:calc(12px + env(safe-area-inset-bottom,0px))}
+.modal .card{background:var(--surface);border-radius:14px;border-top:3px solid var(--accent);padding:18px;width:100%;max-width:520px;display:flex;flex-direction:column;gap:12px}
+.modal h3{margin:0;font-size:19px}
+.modal p{margin:0;color:var(--muted);font-size:14px;overflow-wrap:anywhere}
+
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));z-index:50;background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;font-size:14px;box-shadow:var(--shadow);max-width:calc(100% - 32px);text-align:center}
+@media (prefers-reduced-motion:no-preference){.sheet,.modal .card{animation:up .18s ease-out}@keyframes up{from{transform:translateY(24px);opacity:.6}}}
+</style>
+</head>
+<body>
+
+<!-- ============ SURVEY LIST ============ -->
+<div id="listView">
+  <header class="topbar"><div class="in">
+    <span class="brand">Site <span>Walk</span></span>
+    <span class="chip" id="netChip">Checking…</span>
+  </div></header>
+  <main class="wrap">
+    <div class="banner" id="installBanner" hidden><p id="installText"></p><button id="installGo" class="btn primary" hidden>Install</button><button id="installX" aria-label="Dismiss">✕</button></div>
+    <div class="row">
+      <div style="min-width:0;flex:1">
+        <h1 class="pg">Surveys</h1>
+        <p class="sub">Saved on this phone. Works without a signal.</p>
+      </div>
+      <button class="btn primary" id="newBtn">+ New survey</button>
+    </div>
+    <form class="form" id="newForm" hidden autocomplete="off">
+      <label class="fl">Site / project name
+        <input class="field" id="nsName" maxlength="90" placeholder="e.g. Zoo — Savanna exhibit" required>
+      </label>
+      <label class="fl">Surveyor
+        <input class="field" id="nsSurveyor" maxlength="60" placeholder="Your name">
+      </label>
+      <div class="row"><button class="btn primary" type="submit">Create survey</button><button class="btn" type="button" id="nsCancel">Cancel</button></div>
+    </form>
+    <div class="slist" id="surveyList"></div>
+    <div class="foot" id="storageInfo"></div>
+  </main>
+</div>
+
+<!-- ============ SURVEY ============ -->
+<div id="surveyView" hidden>
+  <header class="topbar"><div class="in">
+    <button class="back" id="backBtn">‹ Surveys</button>
+    <span class="chip" id="netChip2"></span>
+  </div></header>
+  <main class="wrap">
+    <div>
+      <input id="svName" aria-label="Survey name" maxlength="90" placeholder="Name this survey">
+      <div class="meta"><span><b id="cStops">0</b> stops</span><span><b id="cPhotos">0</b> photos</span><span id="svSurveyor"></span></div>
+    </div>
+    <div class="row">
+      <button class="btn primary" id="addBtn">+ Drop pin</button>
+      <span class="spacer"></span>
+      <button class="btn dark" id="reportBtn" disabled>Build report (PDF)</button>
+    </div>
+    <section class="panel" id="mapPanel" aria-label="Site plan"></section>
+    <h2 class="sec">Stops <span style="font-weight:400;letter-spacing:0;text-transform:none">in walk order</span></h2>
+    <div class="stops" id="stopList"></div>
+    <details class="settings" id="settings">
+      <summary>Survey settings</summary>
+      <div class="in">
+        <label class="fl">Surveyor
+          <input class="field" id="setSurveyor" maxlength="60" placeholder="Your name">
+        </label>
+        <label class="check"><input type="checkbox" id="setGps"> Record GPS location with each new stop</label>
+        <div class="row"><button class="btn" id="replaceMap">Replace plan</button></div>
+        <p class="sub" id="replaceHint">Pins keep their position on screen, so only replace the plan with a cleaner copy of the same sheet.</p>
+        <div class="row"><button class="btn danger" id="delSurvey">Delete survey</button></div>
+        <p class="sub">Deleting removes the plan, stops and photos from this phone for good. Build and share the report first.</p>
+      </div>
+    </details>
+  </main>
+</div>
+
+<input type="file" id="mapFile" accept="image/*,application/pdf,.pdf" hidden>
+<input type="file" id="camFile" accept="image/*" capture="environment" hidden>
+<input type="file" id="libFile" accept="image/*" multiple hidden>
+
+<!-- stop editor -->
+<div class="sheet" id="sheet" hidden role="dialog" aria-label="Stop details">
+  <div class="in">
+    <div class="top">
+      <span class="n" id="sNum">Stop 1</span>
+      <span class="when" id="sWhen"></span>
+      <button class="btn" id="sClose">Done</button>
+    </div>
+    <div class="row">
+      <button class="btn primary" id="sCam">Take photo</button>
+      <button class="btn" id="sLib">Add from library</button>
+    </div>
+    <div class="status" id="sStatus"></div>
+    <div class="photos" id="sPhotos"></div>
+    <label class="fl">Zone / landmark
+      <input class="field" id="sZone" maxlength="90" placeholder="e.g. Main viewing deck" autocomplete="off">
+    </label>
+    <div class="zchips" id="sChips"></div>
+    <label class="fl">Notes
+      <textarea class="field" id="sNote" placeholder="Conditions, power, conduit, mounting, sightlines, distances…"></textarea>
+    </label>
+    <div class="gps" id="sGps"></div>
+    <div class="row">
+      <span class="saved" id="sSaved"></span>
+      <span class="spacer"></span>
+      <button class="btn danger" id="sDel">Delete stop</button>
+    </div>
+  </div>
+</div>
+
+<div class="lightbox" id="lb" hidden>
+  <div class="bar">
+    <span id="lbCap"></span>
+    <span class="row"><button class="btn danger" id="lbDel">Remove</button><button class="btn" id="lbClose">Close</button></span>
+  </div>
+  <div class="pic"><img id="lbImg" alt=""></div>
+</div>
+
+<div class="modal" id="ready" hidden role="dialog" aria-label="Report ready">
+  <div class="card">
+    <h3>Report ready</h3>
+    <p id="readyInfo"></p>
+    <div class="row">
+      <button class="btn primary" id="readyShare">Share…</button>
+      <button class="btn" id="readySave">Save / open</button>
+      <span class="spacer"></span>
+      <button class="btn" id="readyClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="vendor/pdf.min.js"></script>
+<script src="vendor/jspdf.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
