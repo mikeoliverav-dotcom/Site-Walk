@@ -151,6 +151,25 @@ details.settings .in{padding:0 14px 14px;display:flex;flex-direction:column;gap:
   padding-top:10px;padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 .actionbar .in{max-width:900px;margin:0 auto}
 .actionbar .btn{width:100%;min-height:56px;font-size:18px}
+/* Tablet / large screen in landscape, with a plan loaded: plan + button on the left, stops on the right */
+.shead{display:flex;flex-direction:column;gap:16px}
+.leftcol,.rightcol{display:flex;flex-direction:column;gap:16px;min-width:0}
+@media (min-width:900px) and (orientation:landscape){
+  #surveyView.split{display:flex;flex-direction:column;height:100vh;height:100dvh}
+  body.split-on{padding-bottom:0}
+  #surveyView.split .topbar .in{max-width:none}
+  #surveyView.split .wrap.survey{flex:1;min-height:0;max-width:none;width:100%;display:grid;
+    grid-template-columns:minmax(0,1.75fr) minmax(320px,1fr);grid-template-rows:auto minmax(0,1fr);gap:12px 20px;padding-block:12px}
+  #surveyView.split .shead{grid-column:1 / -1;flex-direction:row;align-items:center;gap:16px}
+  #surveyView.split .shead .stitle{flex:1;min-width:0}
+  #surveyView.split .leftcol{min-height:0;gap:10px}
+  #surveyView.split #mapPanel{flex:1;min-height:0;display:flex;flex-direction:column}
+  #surveyView.split .mapscroll{flex:1;max-height:none;min-height:0}
+  #surveyView.split .actionbar{position:static;padding:0;background:none;border:0;box-shadow:none}
+  #surveyView.split .actionbar .in{max-width:none}
+  #surveyView.split .rightcol{min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:calc(16px + env(safe-area-inset-bottom,0px));padding-right:2px}
+  #surveyView.split .sec{position:sticky;top:0;background:var(--bg);z-index:1;margin-top:0;padding-top:2px}
+}
 /* Stop editor: full screen */
 .sheet{position:fixed;inset:0;z-index:20;background:var(--surface);overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
   padding-bottom:calc(24px + env(safe-area-inset-bottom,0px));padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
@@ -235,16 +254,20 @@ body.editing{overflow:hidden}
     <button class="back" id="backBtn">‹ Surveys</button>
     <span class="chip" id="netChip2"></span>
   </div></header>
-  <main class="wrap">
-    <div>
+  <main class="wrap survey" id="surveyMain">
+    <div class="shead"><div class="stitle">
       <input id="svName" aria-label="Survey name" maxlength="90" placeholder="Name this survey">
       <div class="meta"><span><b id="cStops">0</b> stops</span><span><b id="cPhotos">0</b> photos</span><span id="cIssuesWrap" hidden><b id="cIssues" style="color:var(--issue)">0</b><span id="cIssuesLbl"> issues</span></span><span id="svSurveyor"></span></div>
     </div>
     <div class="row">
       <span class="spacer"></span>
       <button class="btn dark" id="reportBtn" disabled>Build report (PDF)</button>
+    </div></div>
+    <div class="leftcol">
+      <section class="panel" id="mapPanel" aria-label="Site plan"></section>
+      <div class="actionbar" id="actionBar"><div class="in"><button class="btn primary" id="addBtn">+ Drop pin</button></div></div>
     </div>
-    <section class="panel" id="mapPanel" aria-label="Site plan"></section>
+    <div class="rightcol">
     <h2 class="sec">Stops <span style="font-weight:400;letter-spacing:0;text-transform:none">in walk order</span></h2>
     <div class="stops" id="stopList"></div>
     <details class="settings" id="settings">
@@ -260,8 +283,8 @@ body.editing{overflow:hidden}
         <p class="sub">Deleting removes the plan, stops and photos from this phone for good. Build and share the report first.</p>
       </div>
     </details>
+    </div>
   </main>
-  <div class="actionbar" id="actionBar"><div class="in"><button class="btn primary" id="addBtn">+ Drop pin</button></div></div>
 </div>
 
 <input type="file" id="mapFile" accept="image/*,application/pdf,.pdf" hidden>

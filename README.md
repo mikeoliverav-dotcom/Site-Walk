@@ -34,6 +34,7 @@ Wait until the top-right label says **Ready offline**. From then on it works wit
    - **No plan:** there's no plan window. Tap **+ New stop** (bottom of the screen) at each spot and type the location name.
 2. **Take photo** / **Add from library**, then fill in the location and notes. Everything saves as you type. Each new stop starts with a blank location; locations you've already used appear as quick-pick buttons.
 3. Tick **Issue** on any stop that's a problem. Its pin turns red, and the report lists it under **Issues**.
+   On an iPad (or any large screen) held in landscape, the plan and **+ Drop pin** sit on the left and the list of stops on the right.
 4. GPS is recorded with each stop when available. This works offline too, and you can turn it off in Survey settings.
 5. **Build report (PDF)** → **Share…** to Mail, Teams, Files or AirDrop. If you're offline, save it to Files and send it later.
 6. Once the report is shared, delete the survey (Survey settings → Delete survey) to free up space.

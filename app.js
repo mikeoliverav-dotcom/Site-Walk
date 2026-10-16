@@ -2,7 +2,7 @@
 /* Site Walk — offline site survey app.
    Everything is stored on the device in IndexedDB. No server, no account. */
 
-const APP_VERSION = '1.2.1';
+const APP_VERSION = '1.3.0';
 /* Report header/footer text. Set `site` to a web address to show it in the footer. */
 const BRAND = { name: 'Site Walk', tagline: 'Survey report', site: '' };
 
@@ -176,7 +176,7 @@ async function openSurvey(id) {
   $('mapPanel').dataset.mode = ''; $('settings').open = false;
   show('survey'); renderSurvey(true);
 }
-async function showList() { flushSaves(); closeSheet(); clearURLs(); S.cur = null; show('list'); renderList(); }
+async function showList() { flushSaves(); closeSheet(); clearURLs(); S.cur = null; $('surveyView').classList.remove('split'); document.body.classList.remove('split-on'); show('list'); renderList(); }
 $('backBtn').onclick = showList;
 
 function renderSurvey(full) {
@@ -188,6 +188,8 @@ function renderSurvey(full) {
   renderIssueCount();
   const hasMap = !!s.mapId;
   $('actionBar').hidden = !hasMap && !s.noMap;
+  $('surveyView').classList.toggle('split', hasMap);
+  document.body.classList.toggle('split-on', hasMap);
   $('addBtn').textContent = hasMap ? (S.armed ? 'Tap the plan… (cancel)' : '+ Drop pin') : '+ New stop';
   $('addBtn').classList.toggle('armed', S.armed);
   $('addBtn').classList.toggle('primary', !S.armed);
