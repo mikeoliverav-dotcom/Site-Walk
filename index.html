@@ -224,7 +224,12 @@ body.editing{overflow:hidden}
 .lightbox .bar .btn.armed{background:#e5372b;border-color:#e5372b;color:#fff}
 .lightbox .hintz.live{color:#fff;font-weight:700}
 .photos button{position:relative}
-.photos .mk{position:absolute;right:4px;bottom:4px;min-width:22px;height:22px;padding:0 5px;border-radius:11px;background:#e5372b;color:#fff;font-size:13px;font-weight:700;display:grid;place-items:center;box-shadow:0 1px 3px rgba(0,0,0,.4)}
+.lightbox .lbname{width:100%;margin-top:10px;border:1.5px solid #444;border-radius:8px;background:#151515;color:#fff;padding:11px 12px;font-size:16px}
+.lightbox .lbname:focus{border-color:var(--accent);outline:none}
+.lightbox .lbname.prompt{border-color:var(--accent);box-shadow:0 0 0 3px rgba(198,244,50,.35)}
+.lightbox .lbname::placeholder{color:#888}
+.photos .cap{position:absolute;left:0;right:0;bottom:0;padding:14px 5px 4px;background:linear-gradient(transparent,rgba(0,0,0,.75));color:#fff;font-size:11px;font-weight:600;line-height:1.2;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.photos .mk{position:absolute;right:4px;top:4px;min-width:22px;height:22px;padding:0 5px;border-radius:11px;background:#e5372b;color:#fff;font-size:13px;font-weight:700;display:grid;place-items:center;box-shadow:0 1px 3px rgba(0,0,0,.4)}
 .lightbox .hintz{color:#aaa;font-size:12px;text-align:center}
 
 .modal{position:fixed;inset:0;z-index:45;background:rgba(0,0,0,.5);display:grid;place-items:end center;
@@ -353,6 +358,7 @@ body.editing{overflow:hidden}
     <span class="row"><button class="btn" id="lbArrow">↗ Arrow</button><button class="btn" id="lbUndo" disabled>Undo arrow</button><button class="btn danger" id="lbDel">Remove</button><button class="btn" id="lbClose">Close</button></span>
   </div>
   <div class="pic" id="lbPic"><div class="stage" id="lbStage"><img id="lbImg" alt="" draggable="false"><svg id="lbMarks" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"></svg></div></div>
+  <input class="lbname" id="lbName" maxlength="80" placeholder="Name this photo (optional), e.g. Rack front" autocomplete="off" enterkeyhint="done">
   <div class="hintz" id="lbHint">Pinch to zoom · double-tap to zoom in or out</div>
 </div>
 

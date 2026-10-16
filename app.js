@@ -2,7 +2,7 @@
 /* Site Walk — offline site survey app.
    Everything is stored on the device in IndexedDB. No server, no account. */
 
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.7.1';
 /* Report header/footer text. Set `site` to a web address to show it in the footer. */
 const BRAND = { name: 'Site Walk', tagline: 'Survey report', site: '' };
 
@@ -482,7 +482,7 @@ function renderSheet(full) {
   if (full || document.activeElement !== $('sZone')) $('sZone').value = p.zone || '';
   if (full || document.activeElement !== $('sNote')) $('sNote').value = p.note || '';
   const ph = p.photos || [];
-  $('sPhotos').innerHTML = ph.map((id, i) => { const n = photoMarks(p, id).length; return `<button data-i="${i}" aria-label="Open photo ${i + 1}${n ? `, ${n} arrow${n === 1 ? '' : 's'}` : ''}"><img data-blob="${id}" alt="">${n ? `<span class="mk">↗${n > 1 ? n : ''}</span>` : ''}</button>`; }).join('');
+  $('sPhotos').innerHTML = ph.map((id, i) => { const n = photoMarks(p, id).length; return `<button data-i="${i}" aria-label="Open photo ${i + 1}${n ? `, ${n} arrow${n === 1 ? '' : 's'}` : ''}"><img data-blob="${id}" alt="">${photoName(p, id) ? `<span class="cap">${esc(photoName(p, id))}</span>` : ''}${n ? `<span class="mk">↗${n > 1 ? n : ''}</span>` : ''}</button>`; }).join('');
   $('sPhotos').querySelectorAll('button').forEach(b => (b.onclick = () => openLightbox(+b.dataset.i)));
   hydrate($('sPhotos'));
   const zones = [...new Set(S.stops.map(x => x.zone).filter(Boolean))].filter(z => z !== p.zone).slice(-6);
@@ -536,10 +536,21 @@ async function addPhotos(files) {
     } catch (e) { bad++; st.className = 'status err'; st.textContent = storageMsg(e); }
   }
   if (!bad) { st.className = 'status ok'; st.textContent = `${ok} photo${ok === 1 ? '' : 's'} saved on this phone.`; }
+  return ok;
 }
 $('sCam').onclick = () => $('camFile').click();
 $('sLib').onclick = () => $('libFile').click();
-$('camFile').onchange = e => { addPhotos([...e.target.files]); e.target.value = ''; };
+/* After taking a photo, open it straight away with the name box ready */
+$('camFile').onchange = async e => {
+  const files = [...e.target.files]; e.target.value = '';
+  const ok = await addPhotos(files);
+  const p = sel();
+  if (ok && p && p.photos.length) {
+    openLightbox(p.photos.length - 1);
+    const n = $('lbName'); n.classList.add('prompt'); n.focus();
+    setTimeout(() => n.classList.remove('prompt'), 2500);
+  }
+};
 $('libFile').onchange = e => { addPhotos([...e.target.files]); e.target.value = ''; };
 
 let lbIdx = 0;
@@ -550,8 +561,21 @@ function openLightbox(i) {
   $('lb').hidden = false;
   blobURL(p.photos[i]).then(u => { const im = $('lbImg'); if (im.getAttribute('src') !== u) im.src = u; else lbFit(); });
   $('lbCap').textContent = `Stop ${p.n} · photo ${i + 1} of ${p.photos.length}`;
+  $('lbName').value = photoName(p, p.photos[i]);
 }
-$('lbClose').onclick = () => { setArrowMode(false); $('lb').hidden = true; };
+/* ---- Photo names: stored per photo id on the stop ---- */
+function photoName(p, id) { return (p && p.captions && p.captions[id]) || ''; }
+let lbNameT;
+$('lbName').addEventListener('input', () => {
+  const p = sel(); if (!p) return;
+  const id = p.photos[lbIdx], v = $('lbName').value.trim();
+  p.captions = p.captions || {};
+  if (v) p.captions[id] = v; else delete p.captions[id];
+  clearTimeout(lbNameT); lbNameT = setTimeout(() => { saveStop(p); renderSheet(false); }, 400);
+});
+$('lbName').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('lbName').blur(); } });
+$('lbName').addEventListener('blur', () => { const p = sel(); if (p) { clearTimeout(lbNameT); saveStop(p); renderSheet(false); } });
+$('lbClose').onclick = () => { $('lbName').blur(); setArrowMode(false); $('lb').hidden = true; };
 /* Size the photo (and its arrow layer) to fit the viewer */
 function lbFit() {
   const im = $('lbImg'), st = $('lbStage'), box = $('lbPic');
@@ -716,6 +740,7 @@ twoTap($('lbDel'), 'Remove', 'Tap again to remove', async () => {
   const gone = p.photos[lbIdx];
   p.photos = p.photos.filter((_, i) => i !== lbIdx);
   if (p.marks) delete p.marks[gone];
+  if (p.captions) delete p.captions[gone];
   await saveStop(p);
   try { await idb.del('blobs', gone); } catch (_) {}
   dropURL(gone);
@@ -1085,17 +1110,21 @@ async function buildReport(progress) {
         if (im) {
           let w = colW, h = colW * im.h / im.w;
           if (h > colW * 1.3) { h = colW * 1.3; w = h * im.w / im.h; }
-          pair.push({ im, w, h, label: `${p.n}.${j + 1}` });
+          pair.push({ im, w, h, label: `${p.n}.${j + 1}`, name: photoName(p, ph[j]) });
         }
       }
       if (!pair.length) continue;
-      const rowH = Math.max(...pair.map(q => q.h)) + 16;
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5);
+      pair.forEach(q => { q.lines = doc.splitTextToSize(`Photo ${q.label}${q.name ? ' — ' + q.name : ''}`, colW).slice(0, 2); });
+      const capH = Math.max(...pair.map(q => q.lines.length)) * 10.5;
+      const imgH = Math.max(...pair.map(q => q.h));
+      const rowH = imgH + 6 + capH;
       ensure(rowH);
       pair.forEach((q, k) => {
         const x = M + k * (colW + gap) + (colW - q.w) / 2;
         doc.addImage(q.im.data, 'JPEG', x, y, q.w, q.h, undefined, 'FAST');
-        doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...MID);
-        doc.text(`Photo ${q.label}`, M + k * (colW + gap), y + q.h + 11);
+        doc.setFont('helvetica', q.name ? 'bold' : 'normal'); doc.setFontSize(8.5); doc.setTextColor(...(q.name ? BLACK : MID));
+        doc.text(q.lines, M + k * (colW + gap), y + q.h + 12, { lineHeightFactor: 1.2 });
       });
       y += rowH + 8;
     }

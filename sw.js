@@ -1,6 +1,6 @@
 /* Site Walk service worker: caches the whole app so it opens with no signal.
    To ship an update, change VERSION; phones pick it up the next time they open the app online. */
-const VERSION = 'sitewalk-1.6.0';
+const VERSION = 'sitewalk-1.7.1';
 const ASSETS = [
   './', './index.html', './app.js', './manifest.webmanifest',
   './vendor/pdf.min.js', './vendor/pdf.worker.min.js', './vendor/jspdf.umd.min.js',
