@@ -2,7 +2,7 @@
 /* Site Walk — offline site survey app.
    Everything is stored on the device in IndexedDB. No server, no account. */
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 /* Report header/footer text. Set `site` to a web address to show it in the footer. */
 const BRAND = { name: 'Site Walk', tagline: 'Survey report', site: '' };
 
@@ -325,11 +325,11 @@ twoTap($('delSurvey'), 'Delete survey', 'Tap again to delete for good', async ()
 /* ---------------- stops ---------------- */
 async function createStop(x, y) {
   const n = S.stops.reduce((m, p) => Math.max(m, p.n || 0), 0) + 1;
-  const st = { id: uid(), surveyId: S.cur.id, n, x, y, zone: S.cur.mapId ? (S.lastZone || '') : '', note: '', photos: [], issue: false, createdAt: new Date().toISOString(), gps: null };
+  const st = { id: uid(), surveyId: S.cur.id, n, x, y, zone: '', note: '', photos: [], issue: false, createdAt: new Date().toISOString(), gps: null };
   try { await idb.put('stops', st); } catch (e) { renderSurvey(); return toast(storageMsg(e)); }
   S.stops.push(st); await touch();
   S.selId = st.id; renderSurvey(); openSheet();
-  if (!S.cur.mapId) { const z = $('sZone'); z.focus(); }
+  $('sZone').focus();
   if (S.cur.gps !== false && navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(async pos => {
       const cur = S.stops.find(p => p.id === st.id); if (!cur) return;
