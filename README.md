@@ -47,7 +47,7 @@ Wait until the top-right label says **Ready offline**. From then on it works wit
 - **Data lives only on that phone.** If the app is deleted from the Home Screen, its surveys go with it. Share the report before you remove the app or switch phones.
 - **Use the Home Screen icon, not a Safari tab.** iPhone can clear data for websites that haven't been opened in a while, but it doesn't do that for installed Home Screen apps.
 - **Report header/footer:** Set by the `BRAND` line near the top of `app.js` (name, tagline and an optional web address). Edit them there.
-- **Updating the app:** Replace the files on the host, then change `VERSION` at the top of `sw.js` (for example `sitewalk-1.0.1`). Phones pick up the update the next time they open the app with a signal, and existing surveys are kept.
+- **Updating the app:** Replace the files on the host, then change `VERSION` at the top of `sw.js` (for example `sitewalk-1.0.1`). From v1.7.3 on, phones check for updates whenever the app is opened or brought back to the screen with a signal, and switch to the new version on their own (after you close any stop or photo you have open). Existing surveys are kept. The version number is shown at the bottom of the Surveys screen.
 
 ## Files
 

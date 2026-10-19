@@ -2,7 +2,7 @@
 /* Site Walk — offline site survey app.
    Everything is stored on the device in IndexedDB. No server, no account. */
 
-const APP_VERSION = '1.7.2';
+const APP_VERSION = '1.7.3';
 /* Report header/footer text. Set `site` to a web address to show it in the footer. */
 const BRAND = { name: 'Site Walk', tagline: 'Survey report', site: '' };
 
@@ -459,7 +459,7 @@ window.addEventListener('pagehide', flushSaves);
 
 function openStop(id) { flushSaves(); const ps = S.stops.find(x => x.id === id); if (ps && ps.sheetId && S.cur.sheetId !== ps.sheetId && sheetById(ps.sheetId)) { S.cur.sheetId = ps.sheetId; syncSheet(); S.zoom = 1; touch(); } S.selId = id; S.armed = false; renderSurvey(); openSheet(); }
 function openSheet() { $('sheet').hidden = false; $('sheet').scrollTop = 0; document.body.classList.add('editing'); renderSheet(true); }
-function closeSheet() { flushSaves(); $('sheet').hidden = true; document.body.classList.remove('editing'); S.selId = null; }
+function closeSheet() { flushSaves(); $('sheet').hidden = true; document.body.classList.remove('editing'); S.selId = null; setTimeout(applyUpdate, 300); }
 $('sClose').onclick = () => { closeSheet(); renderSurvey(); backToPlan(); };
 /* After Done: show the plan (or, with no plan, the top of the survey with + New stop). */
 function backToPlan() {
@@ -575,7 +575,7 @@ $('lbName').addEventListener('input', () => {
 });
 $('lbName').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('lbName').blur(); } });
 $('lbName').addEventListener('blur', () => { const p = sel(); if (p) { clearTimeout(lbNameT); saveStop(p); renderSheet(false); } });
-$('lbClose').onclick = () => { $('lbName').blur(); setArrowMode(false); $('lb').hidden = true; };
+$('lbClose').onclick = () => { $('lbName').blur(); setArrowMode(false); $('lb').hidden = true; setTimeout(applyUpdate, 300); };
 /* Size the photo (and its arrow layer) to fit the viewer */
 function lbFit() {
   const im = $('lbImg'), st = $('lbStage'), box = $('lbPic');
@@ -1184,7 +1184,7 @@ $('readySave').onclick = () => {
   document.body.appendChild(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 60000);
 };
-$('readyClose').onclick = () => ($('ready').hidden = true);
+$('readyClose').onclick = () => { $('ready').hidden = true; setTimeout(applyUpdate, 300); };
 
 /* ---------------- connectivity, install, offline ---------------- */
 let swReady = false;
@@ -1212,13 +1212,32 @@ window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferr
 $('installGo').onclick = async () => { if (!deferredPrompt) return; deferredPrompt.prompt(); await deferredPrompt.userChoice.catch(() => {}); deferredPrompt = null; $('installBanner').hidden = true; };
 $('installX').onclick = () => { ls.set('installDismissed', '1'); $('installBanner').hidden = true; };
 
+/* Updates: check for a new version on launch and every time the app comes back to the foreground
+   (home-screen apps on iPhone usually resume rather than restart). When a new version takes over,
+   reload into it right away, or as soon as the open stop / photo / report window is closed. */
+const busyEditing = () => !$('sheet').hidden || !$('lb').hidden || !$('ready').hidden || $('mapPanel').dataset.mode === 'pick' || $('mapPanel').dataset.mode === 'busy';
+function applyUpdate() {
+  if (!S.pendingReload) return;
+  if (busyEditing()) return;
+  flushSaves();
+  toast('Updating to the latest version…', 1500);
+  setTimeout(() => location.reload(), 600);
+}
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(() => { swReady = true; renderNet(); })
-    .catch(() => { renderNet(); });
-  let reloaded = false;
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    const check = () => { if (navigator.onLine) reg.update().catch(() => {}); };
+    check();
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
+    window.addEventListener('online', check);
+    return navigator.serviceWorker.ready;
+  }).then(() => { swReady = true; renderNet(); }).catch(() => { renderNet(); });
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (reloaded || !S.cur) { swReady = true; renderNet(); return; }
-    reloaded = true; toast('App updated. Close and reopen it to use the new version.', 5000);
+    swReady = true; renderNet();
+    if (!hadController || S.pendingReload) return; // first install: nothing to reload
+    S.pendingReload = true;
+    if (busyEditing()) toast('A new version is ready. It will load when you close this window.', 4000);
+    applyUpdate();
   });
 }
 if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
