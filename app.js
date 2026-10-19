@@ -2,7 +2,7 @@
 /* Site Walk — offline site survey app.
    Everything is stored on the device in IndexedDB. No server, no account. */
 
-const APP_VERSION = '1.7.1';
+const APP_VERSION = '1.7.2';
 /* Report header/footer text. Set `site` to a web address to show it in the footer. */
 const BRAND = { name: 'Site Walk', tagline: 'Survey report', site: '' };
 
@@ -1050,9 +1050,14 @@ async function buildReport(progress) {
   y += 24;
 
   // Stop details
+  // Stops with photos always start on a fresh page, so a stop's title never sits apart from its photos
+  const hasPhotos = p => (p.photos?.length || 0) > 0;
+  if (stops.length && hasPhotos(stops[0]) && y > CT) { doc.addPage(); y = CT; }
   sectionHead('Stop details');
+  const detailsTop = y;
   let done = 0;
   for (const p of stops) {
+    if (hasPhotos(p) && y > detailsTop && y > CT) { doc.addPage(); y = CT; }
     const shp = p.x != null ? sheets.find(x => x.id === p.sheetId) : null;
     let snip = null;
     if (shp) { progress(`Adding plan detail for stop ${p.n}…`); try { snip = await planSnip(shp, p, stops.filter(q => q.sheetId === shp.id && q.x != null)); } catch (_) {} }

@@ -39,7 +39,7 @@ Wait until the top-right label says **Ready offline**. From then on it works wit
 3. Tick **Issue** on any stop that's a problem. Its pin turns red, and the report lists it under **Issues**.
    On an iPad (or any large screen) held in landscape, the plan and **+ Drop pin** sit on the left and the list of stops on the right.
 4. GPS is recorded with each stop when available. This works offline too, and you can turn it off in Survey settings.
-5. **Build report (PDF)** builds the report. Every pinned stop includes a close-up of the plan around its pin (adjust `SNIP_FRACTION` in `app.js` to show more or less of the sheet). Then tap **Share…** to send it to Mail, Teams, Files or AirDrop. If you're offline, save it to Files and send it later.
+5. **Build report (PDF)** builds the report. Each stop that has photos starts on a new page. Every pinned stop includes a close-up of the plan around its pin (adjust `SNIP_FRACTION` in `app.js` to show more or less of the sheet). Then tap **Share…** to send it to Mail, Teams, Files or AirDrop. If you're offline, save it to Files and send it later.
 6. Once the report is shared, delete the survey (Survey settings → Delete survey) to free up space.
 
 ## Good to know
