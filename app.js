@@ -2,7 +2,7 @@
 /* Site Walk — offline site survey app.
    Everything is stored on the device in IndexedDB. No server, no account. */
 
-const APP_VERSION = '1.7.3';
+const APP_VERSION = '1.8.0';
 /* Report header/footer text. Set `site` to a web address to show it in the footer. */
 const BRAND = { name: 'Site Walk', tagline: 'Survey report', site: '' };
 
@@ -60,6 +60,18 @@ async function shrink(file, max = 2048, q = 0.82) {
     if (!b) throw new Error('That image could not be processed');
     return { blob: b, w: c.width, h: c.height };
   } finally { URL.revokeObjectURL(u); }
+}
+
+/* Room dimensions: stored as typed on the stop (p.dims = {w, d, h}); a bare number is read as feet. */
+const DIM_KEYS = [['w', 'Width', 'W'], ['d', 'Depth', 'D'], ['h', 'Ceiling', 'Clg']];
+const dimVal = v => { v = String(v || '').trim(); return /^\d+(\.\d+)?$/.test(v) ? v + "'" : v; };
+const hasDims = p => !!(p && p.dims && DIM_KEYS.some(([k]) => p.dims[k]));
+/* Short: "W 24' × D 18' · Clg 9'"; long: "Width 24' × Depth 18' · Ceiling 9'" */
+function dimsText(p, long) {
+  if (!hasDims(p)) return '';
+  const d = p.dims, lab = k => DIM_KEYS.find(x => x[0] === k)[long ? 1 : 2];
+  const wd = ['w', 'd'].filter(k => d[k]).map(k => `${lab(k)} ${dimVal(d[k])}`).join(' × ');
+  return [wd, d.h ? `${lab('h')} ${dimVal(d.h)}` : ''].filter(Boolean).join(' · ');
 }
 
 /* ---------------- storage (IndexedDB) ---------------- */
@@ -352,6 +364,7 @@ function renderStops() {
     const ph = p.photos || [];
     return `<button class="stop${p.issue ? ' issue' : ''}${p.id === S.selId ? ' sel' : ''}" data-id="${p.id}"><span class="num">${p.n}</span><span class="body">
       <span class="zone ${p.zone ? '' : 'none'}">${esc(p.zone || 'No location named')}${p.issue ? '<span class="tag issue">Issue</span>' : ''}</span>
+      ${hasDims(p) ? `<span class="dim">${esc(dimsText(p))}</span>` : ''}
       ${p.note ? `<span class="note">${esc(p.note)}</span>` : ''}
       ${ph.length ? `<span class="thumbs">${ph.slice(0, 8).map(id => `<img data-blob="${id}" alt="">`).join('')}</span>` : ''}
       <span class="sf"><span>${esc(fmtDate(p.createdAt))}</span><span>${ph.length} photo${ph.length === 1 ? '' : 's'}</span>${p.x == null && S.cur.mapId ? '<span>no pin</span>' : ''}${S.cur.sheets.length > 1 && sheetById(p.sheetId) ? `<span>${esc(sheetById(p.sheetId).name)}</span>` : ''}</span>
@@ -481,6 +494,7 @@ function renderSheet(full) {
   $('sWhen').textContent = fmtDate(p.createdAt);
   if (full || document.activeElement !== $('sZone')) $('sZone').value = p.zone || '';
   if (full || document.activeElement !== $('sNote')) $('sNote').value = p.note || '';
+  for (const [k] of DIM_KEYS) { const el = $('sDim' + k.toUpperCase()); if (full || document.activeElement !== el) el.value = (p.dims && p.dims[k]) || ''; }
   const ph = p.photos || [];
   $('sPhotos').innerHTML = ph.map((id, i) => { const n = photoMarks(p, id).length; return `<button data-i="${i}" aria-label="Open photo ${i + 1}${n ? `, ${n} arrow${n === 1 ? '' : 's'}` : ''}"><img data-blob="${id}" alt="">${photoName(p, id) ? `<span class="cap">${esc(photoName(p, id))}</span>` : ''}${n ? `<span class="mk">↗${n > 1 ? n : ''}</span>` : ''}</button>`; }).join('');
   $('sPhotos').querySelectorAll('button').forEach(b => (b.onclick = () => openLightbox(+b.dataset.i)));
@@ -497,6 +511,22 @@ $('sZone').addEventListener('input', e => setZone(e.target.value.trim()));
 $('sNote').addEventListener('input', e => { const p = sel(); if (!p) return; p.note = e.target.value; schedule(p); });
 $('sZone').addEventListener('blur', () => { flushSaves(); });
 $('sNote').addEventListener('blur', () => { flushSaves(); renderStops(); });
+for (const [k] of DIM_KEYS) {
+  const el = $('sDim' + k.toUpperCase());
+  el.addEventListener('input', () => {
+    const p = sel(); if (!p) return;
+    const v = el.value.trim(), d = { ...(p.dims || {}) };
+    if (v) d[k] = v; else delete d[k];
+    if (Object.keys(d).length) p.dims = d; else delete p.dims;
+    schedule(p);
+  });
+  el.addEventListener('blur', () => { flushSaves(); renderStops(); });
+  el.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return; e.preventDefault();
+    const next = { W: 'sDimD', D: 'sDimH' }[k.toUpperCase()];
+    if (next) $(next).focus(); else el.blur();
+  });
+}
 
 function renderIssueCount() {
   const n = S.stops.filter(p => p.issue).length;
@@ -993,7 +1023,8 @@ async function buildReport(progress) {
       let nl = p.note ? doc.splitTextToSize(p.note, CW - 44) : [];
       if (nl.length > 6) { nl = nl.slice(0, 6); nl[5] = nl[5].replace(/.{0,3}$/, '…'); }
       const zl = doc.splitTextToSize(p.zone || 'No location named', CW - 44);
-      const h = 14 + zl.length * 13 + nl.length * 13 + 14;
+      const dl = hasDims(p) ? doc.splitTextToSize(dimsText(p, true), CW - 44) : [];
+      const h = 14 + zl.length * 13 + dl.length * 13 + nl.length * 13 + 14;
       ensure(Math.min(h, 120));
       const top = y;
       doc.setFillColor(...RED_SOFT); doc.rect(M, top, CW, h, 'F');
@@ -1005,6 +1036,7 @@ async function buildReport(progress) {
       y = top + 20;
       for (const l of zl) { doc.text(l, M + 38, y); y += 13; }
       doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+      if (dl.length) { doc.setTextColor(...MID); for (const l of dl) { doc.text(l, M + 38, y); y += 13; } doc.setTextColor(...BLACK); }
       for (const l of nl) { doc.text(l, M + 38, y); y += 13; }
       doc.setFontSize(8.5); doc.setTextColor(...MID);
       doc.text(`Stop ${p.n}${multi && sheetName(p.sheetId) ? ' · ' + sheetName(p.sheetId) : ''} · ${p.photos?.length || 0} photo${(p.photos?.length || 0) === 1 ? '' : 's'} · details below`, M + 38, y); 
@@ -1015,10 +1047,13 @@ async function buildReport(progress) {
 
   // Summary table
   sectionHead('Stop summary');
-  const cols = multi
-    ? [{ t: '#', w: 30 }, { t: 'Location', w: 130 }, { t: 'Sheet', w: 84 }, { t: 'Notes', w: 206 }, { t: 'Photos', w: 54 }]
-    : [{ t: '#', w: 30 }, { t: 'Location', w: 150 }, { t: 'Notes', w: 270 }, { t: 'Photos', w: 54 }];
-  const cNote = multi ? 3 : 2;
+  const anyDims = stops.some(hasDims);
+  const cols = [{ t: '#', w: 30 }, { t: 'Location', w: 0 }];
+  if (multi) cols.push({ t: 'Sheet', w: 80 });
+  if (anyDims) cols.push({ t: 'Room (W × D · Clg)', w: 104 });
+  cols.push({ t: 'Notes', w: 0 }, { t: 'Photos', w: 46 });
+  { const free = CW - cols.reduce((a, c) => a + c.w, 0); cols[1].w = Math.round(free * 0.38); cols[cols.length - 2].w = free - cols[1].w; }
+  const cNote = cols.length - 2, cSheet = multi ? 2 : -1, cDim = anyDims ? (multi ? 3 : 2) : -1;
   const head = () => {
     doc.setFillColor(...BLACK); doc.rect(M, y, CW, 22, 'F');
     doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(255, 255, 255);
@@ -1031,8 +1066,15 @@ async function buildReport(progress) {
     const zl = doc.splitTextToSize(p.zone || '—', cols[1].w - 14).slice(0, 3);
     let nl = doc.splitTextToSize((p.note || '—').replace(/\s+/g, ' '), cols[cNote].w - 14);
     if (nl.length > 3) { nl = nl.slice(0, 3); nl[2] = nl[2].replace(/.{0,3}$/, '…'); }
-    const shl = multi ? doc.splitTextToSize(sheetName(p.sheetId) || '—', cols[2].w - 14).slice(0, 3) : [];
-    const rh = Math.max(zl.length, nl.length, shl.length) * 11.5 + 11;
+    const shl = multi ? doc.splitTextToSize(sheetName(p.sheetId) || '—', cols[cSheet].w - 14).slice(0, 3) : [];
+    let dml = [];
+    if (anyDims) {
+      const d = p.dims || {}, t = [];
+      if (d.w || d.d) t.push([d.w, d.d].map(v => v ? dimVal(v) : '?').join(' × '));
+      if (d.h) t.push('Clg ' + dimVal(d.h));
+      dml = t.length ? t.flatMap(x => doc.splitTextToSize(x, cols[cDim].w - 14)).slice(0, 3) : ['—'];
+    }
+    const rh = Math.max(zl.length, nl.length, shl.length, dml.length) * 11.5 + 11;
     if (ensure(rh)) head();
     if (p.issue) { doc.setFillColor(...RED_SOFT); doc.rect(M, y, CW, rh, 'F'); doc.setFillColor(...RED); doc.rect(M, y, 3, rh, 'F'); }
     else if (i % 2 === 0) { doc.setFillColor(...LO); doc.rect(M, y, CW, rh, 'F'); }
@@ -1042,7 +1084,8 @@ async function buildReport(progress) {
     doc.setFont('helvetica', 'bold'); if (p.issue) doc.setTextColor(...RED); doc.text(String(p.n), cx + 7, y + 15); cx += cols[0].w;
     doc.text(zl, cx + 7, y + 15, { lineHeightFactor: 1.28 }); doc.setTextColor(...BLACK); cx += cols[1].w;
     doc.setFont('helvetica', 'normal');
-    if (multi) { doc.text(shl, cx + 7, y + 15, { lineHeightFactor: 1.28 }); cx += cols[2].w; }
+    if (multi) { doc.text(shl, cx + 7, y + 15, { lineHeightFactor: 1.28 }); cx += cols[cSheet].w; }
+    if (anyDims) { doc.text(dml, cx + 7, y + 15, { lineHeightFactor: 1.28 }); cx += cols[cDim].w; }
     doc.text(nl, cx + 7, y + 15, { lineHeightFactor: 1.28 }); cx += cols[cNote].w;
     doc.text(String(p.photos?.length || 0), cx + 7, y + 15);
     y += rh;
@@ -1076,6 +1119,7 @@ async function buildReport(progress) {
     }
     y += 38;
     const sub = [`${p.photos?.length || 0} photo${(p.photos?.length || 0) === 1 ? '' : 's'}`];
+    if (hasDims(p)) sub.push('Room: ' + dimsText(p, true));
     if (p.gps) sub.push(`GPS ${p.gps.lat}, ${p.gps.lon} (±${p.gps.acc} m)`);
     if (multi && sheetName(p.sheetId)) sub.push('Sheet: ' + sheetName(p.sheetId));
     if (sheets.length && p.x == null) sub.push('not pinned on plan');

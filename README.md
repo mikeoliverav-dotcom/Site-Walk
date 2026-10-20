@@ -36,6 +36,7 @@ Wait until the top-right label says **Ready offline**. From then on it works wit
 2. **Take photo** / **Add from library**, then fill in the location and notes. Everything saves as you type. Each new stop starts with a blank location; locations you've already used appear as quick-pick buttons.
    After **Take photo**, the new photo opens with a name box under it. Type a name (or leave it blank) and tap **Close**. To name or rename a photo later, tap it and use the same box (for example "Rack front"). The name shows on the thumbnail and under the photo in the report.
    To point something out in a photo, open it and tap **↗ Arrow**, then drag from where the arrow should start to the thing it points at (or just tap for a quick arrow). **Undo arrow** removes the last one. Arrows show in the report; the original photo is never altered.
+   **Room dimensions** (optional): Width, Depth and Ceiling height boxes sit under Location. Type them any way you like (`24' 6"`, `7.5 m`); a plain number such as `24` is read as feet. Filled-in dimensions show in the stop list, the report's stop summary (a Room column appears when any stop has them), the Issues list and each stop's details.
 3. Tick **Issue** on any stop that's a problem. Its pin turns red, and the report lists it under **Issues**.
    On an iPad (or any large screen) held in landscape, the plan and **+ Drop pin** sit on the left and the list of stops on the right.
 4. GPS is recorded with each stop when available. This works offline too, and you can turn it off in Survey settings.
