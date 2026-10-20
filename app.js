@@ -2,7 +2,7 @@
 /* Site Walk — offline site survey app.
    Everything is stored on the device in IndexedDB. No server, no account. */
 
-const APP_VERSION = '1.8.1';
+const APP_VERSION = '1.8.3';
 /* Report header/footer text. Set `site` to a web address to show it in the footer. */
 const BRAND = { name: 'Site Walk', tagline: 'Survey report', site: '' };
 

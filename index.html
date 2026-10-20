@@ -137,10 +137,11 @@ textarea.field{min-height:110px;resize:vertical}
 .stop.issue .num{background:var(--issue);color:#fff}
 .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:2px 8px;border-radius:999px;vertical-align:2px;margin-left:6px}
 .tag.issue{background:var(--issue);color:#fff}
-.issuebox{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1.5px solid var(--line);border-radius:10px;cursor:pointer}
-.issuebox input{width:24px;height:24px;accent-color:var(--issue);flex:none}
-.issuebox b{display:block}
-.issuebox small{display:block;color:var(--muted);font-size:13px}
+.issuebox{display:inline-flex;align-items:center;gap:7px;min-height:46px;padding:0 14px;border:1.5px solid var(--line);border-radius:8px;cursor:pointer;font-size:15px;-webkit-tap-highlight-color:transparent}
+.issuebox input{width:20px;height:20px;margin:0;accent-color:var(--issue);flex:none}
+.photorow{gap:6px;flex-wrap:nowrap}
+.photorow .btn,.photorow .issuebox{flex:1 1 auto;justify-content:center;padding:0 10px;font-size:14px;white-space:nowrap;min-width:0}
+.photorow .issuebox{flex:0 0 auto}
 .issuebox.on{border-color:var(--issue);background:var(--issue-soft)}
 .issuebox.on b{color:var(--issue)}
 .choice{display:flex;flex-direction:column;gap:8px}
@@ -336,11 +337,11 @@ body.editing{overflow:hidden}
       <span class="when" id="sWhen"></span>
       <button class="btn" id="sClose">Done</button>
     </div>
-    <div class="row">
+    <div class="row photorow">
       <button class="btn primary" id="sCam">Take photo</button>
       <button class="btn" id="sLib">Add from library</button>
+      <label class="issuebox" id="sIssueBox"><input type="checkbox" id="sIssue" aria-label="Flag this stop as an issue"><b>Issue</b></label>
     </div>
-    <label class="issuebox" id="sIssueBox"><input type="checkbox" id="sIssue"><span><b>Issue</b><small>Flag this stop as a problem to resolve. Its pin turns red and it's listed under Issues in the report.</small></span></label>
     <div class="status" id="sStatus"></div>
     <div class="photos" id="sPhotos"></div>
     <label class="fl">Location
@@ -348,7 +349,7 @@ body.editing{overflow:hidden}
     </label>
     <div class="zchips" id="sChips"></div>
     <fieldset class="dims">
-      <legend>Room dimensions <small>(optional)</small></legend>
+      <legend>Room dimensions <small>(optional, in feet)</small></legend>
       <div class="g">
         <label>Width<input class="field" id="sDimW" maxlength="20" autocomplete="off" enterkeyhint="next"></label>
         <label>Depth<input class="field" id="sDimD" maxlength="20" autocomplete="off" enterkeyhint="next"></label>
