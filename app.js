@@ -1,8 +1,9 @@
 'use strict';
 /* Site Walk — offline site survey app.
-   Everything is stored on the device in IndexedDB. No server, no account. */
+   Everything is saved on the device first (IndexedDB), so it works with no signal. When the app is hosted with
+   its sync server (_worker.js on Cloudflare), surveys also sync to the signed-in person's account. */
 
-const APP_VERSION = '1.8.3';
+const APP_VERSION = '2.4.0';
 /* Report header/footer text. Set `site` to a web address to show it in the footer. */
 const BRAND = { name: 'Site Walk', tagline: 'Survey report', site: '' };
 
@@ -100,6 +101,7 @@ async function os(name, mode = 'readonly') {
 }
 const idb = {
   async get(s, k) { return done((await os(s)).get(k)); },
+  async has(s, k) { return (await done((await os(s)).count(k))) > 0; },
   async all(s) { return done((await os(s)).getAll()); },
   async byIndex(s, i, v) { return done((await os(s)).index(i).getAll(v)); },
   async put(s, v) { const st = await os(s, 'readwrite'); st.put(v); await st._done; },
@@ -126,31 +128,80 @@ function hydrate(root) {
 }
 
 /* ---------------- state ---------------- */
-const S = { surveys: [], cur: null, stops: [], selId: null, armed: false, zoom: 1, lastZone: '' };
+const S = { surveys: [], cur: null, stops: [], selId: null, armed: false, moving: null, zoom: 1, lastZone: '' };
 const sel = () => S.stops.find(p => p.id === S.selId);
 function show(view) { $('listView').hidden = view !== 'list'; $('surveyView').hidden = view !== 'survey'; window.scrollTo(0, 0); }
-async function touch() { if (!S.cur) return; S.cur.updatedAt = new Date().toISOString(); try { await idb.put('surveys', { ...S.cur }); } catch (e) { toast(storageMsg(e)); } }
+/* Save the open survey. `changed` = false for view-only changes (which sheet is showing), so they don't count as edits. */
+async function touch(changed = true) {
+  if (!S.cur || S.cur.readonly) return;
+  if (changed) { S.cur.updatedAt = new Date().toISOString(); S.cur.seq = (S.cur.seq || 0) + 1; }
+  try { await idb.put('surveys', { ...S.cur }); } catch (e) { toast(storageMsg(e)); }
+  if (changed) scheduleSync(5000);
+}
 
 /* ---------------- survey list ---------------- */
+const DAY = 86400e3;
+const daysLeft = s => Math.ceil((s.expiresAt - Date.now()) / DAY);
+const expSoon = s => !!(s.remote && !s.readonly && s.expiresAt && daysLeft(s) <= 7);
+const expText = d => d <= 0 ? 'Deletes today' : d === 1 ? 'Deletes tomorrow' : `Deletes in ${d} days`;
 async function renderList() {
-  S.surveys = (await idb.all('surveys')).sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
-  const L = $('surveyList');
+  const all = await idb.all('surveys');
+  const byDate = (a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || '');
+  S.surveys = all.filter(s => !s.readonly).sort(byDate);
+  const cached = new Map(all.filter(s => s.readonly).map(s => [s.id, s]));
+  const allStops = await idb.all('stops');
+  const L = $('surveyList'), sync = !!SYNC.available;
   if (!S.surveys.length) {
-    L.innerHTML = `<div class="emptycard"><h3>No surveys yet</h3><p>Tap <b>New survey</b>, load the site plan, then drop a pin at each stop on your walk. Photos and notes save on this phone as you go, with or without a signal. When you're done, build the PDF report and share it with the team.</p></div>`;
+    L.innerHTML = `<div class="emptycard"><h3>No surveys yet</h3><p>Tap <b>New survey</b>, load the site plan, then drop a pin at each stop on your walk. Photos and notes save on this phone as you go, with or without a signal${sync ? ', and sync to your account when there is one' : ''}. When you're done, build the PDF report and share it with the team.${sync ? '' : ' To open a survey from another device, tap <b>Import</b>.'}</p></div>`;
   } else {
-    const allStops = await idb.all('stops');
     L.innerHTML = S.surveys.map(s => {
       const st = allStops.filter(p => p.surveyId === s.id);
       const ph = st.reduce((a, p) => a + (p.photos?.length || 0), 0);
       const iss = st.filter(p => p.issue).length;
+      const badges = [];
+      if (sync && isDirty(s)) badges.push('<span class="badge wait">Waiting to sync</span>');
+      if (s.public) badges.push('<span class="badge pub">Public</span>');
+      if (expSoon(s)) badges.push(`<span class="badge exp">${expText(daysLeft(s))}</span>`);
       return `<button class="scard" data-id="${s.id}">
         <span class="sname">${esc(s.name || 'Untitled survey')}</span>
         <span class="smeta">${esc(fmtDate(s.createdAt, false))}${s.surveyor ? ' · ' + esc(s.surveyor) : ''}</span>
-        <span class="scount"><b>${st.length}</b> stops · <b>${ph}</b> photos${iss ? ` · <b style="color:var(--issue)">${iss}</b> issue${iss === 1 ? '' : 's'}` : ''}${s.mapId ? '' : ' · no plan'}</span></button>`;
+        <span class="scount"><b>${st.length}</b> stops · <b>${ph}</b> photos${iss ? ` · <b style="color:var(--issue)">${iss}</b> issue${iss === 1 ? '' : 's'}` : ''}${s.mapId ? '' : ' · no plan'}</span>
+        ${badges.length ? `<span class="badges">${badges.join('')}</span>` : ''}</button>`;
     }).join('');
     L.querySelectorAll('.scard').forEach(b => (b.onclick = () => openSurvey(b.dataset.id)));
   }
-  renderStorage();
+  // Team surveys: public surveys of other people (from the last sync), plus any already downloaded
+  const team = new Map((sync ? SYNC.team : []).map(m => [m.id, m]));
+  for (const c of cached.values()) if (!team.has(c.id)) team.set(c.id, { id: c.id, owner: c.owner, name: c.name, updatedAt: Date.parse(c.updatedAt) || 0, cachedOnly: true });
+  const T = $('teamList'), list = [...team.values()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  $('teamHead').hidden = !list.length; $('mineHead').hidden = !list.length;
+  T.innerHTML = list.map(m => {
+    const c = cached.get(m.id), st = c ? allStops.filter(p => p.surveyId === m.id) : null;
+    const n = st ? st.length : m.stops, ph = st ? st.reduce((a, p) => a + (p.photos?.length || 0), 0) : m.photos;
+    return `<button class="scard" data-id="${m.id}">
+      <span class="sname">${esc(m.name || 'Untitled survey')}</span>
+      <span class="smeta">Shared by ${esc(m.owner || 'a teammate')}${m.updatedAt ? ' · ' + esc(fmtDate(new Date(m.updatedAt).toISOString(), false)) : ''}</span>
+      <span class="scount">${n != null ? `<b>${n}</b> stops · <b>${ph || 0}</b> photos` : ''}</span>
+      <span class="badges">${c ? '<span class="badge">On this device</span>' : '<span class="badge wait">Tap to download</span>'}</span></button>`;
+  }).join('');
+  T.querySelectorAll('.scard').forEach(b => (b.onclick = () => openTeam(b.dataset.id)));
+  $('exportAllBtn').hidden = S.surveys.length < 2;
+  renderExpiry(); renderSyncLine(); renderStorage();
+}
+function renderExpiry() {
+  const soon = S.surveys.filter(expSoon).sort((a, b) => a.expiresAt - b.expiresAt), B = $('expiryBanner');
+  B.hidden = !soon.length; if (!soon.length) return;
+  B.innerHTML = `<p><b class="t">${soon.length === 1 ? 'A survey is' : soon.length + ' surveys are'} about to be deleted.</b> Surveys are deleted from all devices ${SYNC.keepDays || 30} days after their last change. Keep the ones you still need, or build the report or export them first.</p>` +
+    soon.map(s => `<div class="xrow"><span><b>${esc(s.name || 'Untitled survey')}</b> · ${expText(daysLeft(s))}</span><button class="btn" data-keep="${s.id}">Keep 30 more days</button></div>`).join('');
+  B.querySelectorAll('[data-keep]').forEach(b => (b.onclick = () => keepSurvey(b.dataset.keep, b)));
+}
+async function openTeam(id) {
+  if (await idb.has('surveys', id)) return openSurvey(id);
+  const m = SYNC.team.find(x => x.id === id); if (!m) return;
+  if (!navigator.onLine) return toast('Connect to the internet to download this survey. After that it works offline.', 4000);
+  toast('Downloading the survey…', 60000);
+  try { await pullSurvey(m, true); toast('Downloaded. It stays on this device for offline use.', 2500); openSurvey(id); }
+  catch (e) { toast(e.code === 'signin' ? 'Sign in again to download it.' : 'Could not download it: ' + (e.message || e), 4000); if (e.code === 'signin') signinNeeded(); }
 }
 async function renderStorage() {
   try {
@@ -183,9 +234,18 @@ async function openSurvey(id) {
   S.cur = await idb.get('surveys', id);
   if (!S.cur) { toast('That survey could not be found'); return showList(); }
   S.stops = (await idb.byIndex('stops', 'surveyId', id)).sort((a, b) => a.n - b.n);
-  S.selId = null; S.armed = false; S.zoom = 1;
+  S.selId = null; S.armed = false; S.moving = null; S.zoom = 1;
   const z = [...S.stops].reverse().find(p => p.zone); S.lastZone = z ? z.zone : '';
-  migrateSheets();
+  if (!S.cur.readonly) migrateSheets(); else syncSheet();
+  const ro = !!S.cur.readonly;
+  document.body.classList.toggle('ro', ro);
+  $('roBanner').hidden = !ro;
+  if (ro) $('roBanner').innerHTML = `<p>Shared by <b>${esc(S.cur.owner || 'a teammate')}</b> · read-only. You can look through it and build the report.</p>`;
+  $('svName').readOnly = ro; $('lbName').readOnly = ro;
+  twoTap($('delSurvey'), ro ? 'Remove from this device' : 'Delete survey', ro ? 'Tap again to remove' : 'Tap again to delete for good', deleteSurveyAction);
+  $('delHint').textContent = ro ? 'It stays available to the team. Open it from Team surveys to download it again.'
+    : S.cur.remote ? 'Deleting removes the survey from all your devices and your account for good. Build and share the report first.'
+    : 'Deleting removes the plan, stops and photos from this phone for good. Build and share the report first.';
   $('mapPanel').dataset.mode = ''; $('settings').open = false; S.fileMode = 'add'; S.sheetKey = '';
   show('survey'); renderSurvey(true);
 }
@@ -203,15 +263,15 @@ function migrateSheets() {
   syncSheet();
   const first = s.sheets[0]?.id;
   for (const p of S.stops) if (p.x != null && !p.sheetId && first) { p.sheetId = first; idb.put('stops', JSON.parse(JSON.stringify(p))).catch(() => {}); }
-  if (changed) touch();
+  if (changed) touch(false);
 }
 function switchSheet(id) {
   if (!S.cur || S.cur.sheetId === id || !sheetById(id)) return;
-  S.cur.sheetId = id; syncSheet(); S.zoom = 1; touch(); renderSurvey();
+  S.cur.sheetId = id; syncSheet(); S.zoom = 1; touch(false); renderSurvey();
   const sc = $('mapScroll'); if (sc) { sc.scrollLeft = 0; sc.scrollTop = 0; }
 }
 
-async function showList() { flushSaves(); closeSheet(); clearURLs(); S.cur = null; $('surveyView').classList.remove('split'); document.body.classList.remove('split-on'); show('list'); renderList(); }
+async function showList() { await flushSaves(); closeSheet(); S.moving = null; closeDetailDocs(); clearURLs(); S.cur = null; $('surveyView').classList.remove('split'); document.body.classList.remove('split-on', 'ro'); show('list'); await renderList(); scheduleSync(300); }
 $('backBtn').onclick = showList;
 
 function renderSurvey(full) {
@@ -222,12 +282,13 @@ function renderSurvey(full) {
   $('svSurveyor').textContent = s.surveyor ? 'Surveyor: ' + s.surveyor : '';
   renderIssueCount();
   const hasMap = !!s.mapId;
-  $('actionBar').hidden = !hasMap && !s.noMap;
+  $('actionBar').hidden = (!hasMap && !s.noMap) || !!s.readonly;
   $('surveyView').classList.toggle('split', hasMap);
   document.body.classList.toggle('split-on', hasMap);
-  $('addBtn').textContent = hasMap ? (S.armed ? 'Tap the plan… (cancel)' : '+ Drop pin') : '+ New stop';
-  $('addBtn').classList.toggle('armed', S.armed);
-  $('addBtn').classList.toggle('primary', !S.armed);
+  const mv = movingStop();
+  $('addBtn').textContent = mv ? `Cancel moving stop ${mv.n}` : hasMap ? (S.armed ? 'Tap the plan… (cancel)' : '+ Drop pin') : '+ New stop';
+  $('addBtn').classList.toggle('armed', S.armed || !!mv);
+  $('addBtn').classList.toggle('primary', !S.armed && !mv);
   $('reportBtn').disabled = !S.stops.length;
   renderMap(); renderStops(); renderSettings(full);
   if (S.selId) renderSheet(false);
@@ -243,7 +304,7 @@ function renderMap() {
   const s = S.cur, P = $('mapPanel');
   if (!s.mapId) {
     if (P.dataset.mode === 'pick' || P.dataset.mode === 'busy') return;
-    if (s.noMap) { P.hidden = true; return; }
+    if (s.noMap || s.readonly) { P.hidden = true; return; }
     P.hidden = false;
     if (P.dataset.mode !== 'empty') {
       P.dataset.mode = 'empty';
@@ -267,6 +328,7 @@ function renderMap() {
     $('zOut').onclick = () => setZoom(S.zoom / 1.5);
     $('mapInner').addEventListener('click', onMapTap);
     attachPinch($('mapScroll'));
+    $('mapScroll').addEventListener('scroll', scheduleDetail, { passive: true });
   }
   blobURL(s.mapId).then(u => { const im = $('mapImg'); if (im && u && im.getAttribute('src') !== u) im.src = u; });
   const sb = $('sheetBar');
@@ -279,26 +341,95 @@ function renderMap() {
   sb.querySelector('.stab.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   const inner = $('mapInner');
   inner.style.width = (S.zoom * 100) + '%';
-  inner.classList.toggle('armed', S.armed);
+  const mv = movingStop();
+  inner.classList.toggle('armed', S.armed || !!mv);
   $('zLbl').textContent = (Math.round(S.zoom * 10) / 10) + '×';
   const h = $('mapHint');
-  h.textContent = S.armed ? 'Tap the plan where you are standing.' : 'Pins mark each stop. Tap a pin to open it.';
-  h.classList.toggle('live', S.armed);
+  h.textContent = mv ? `Tap the new spot for stop ${mv.n}.${s.sheets.length > 1 ? ' Switch sheets above to move it to another sheet.' : ''}` : S.armed ? 'Tap the plan where you are standing.' : 'Pins mark each stop. Tap a pin to open it.';
+  h.classList.toggle('live', S.armed || !!mv);
   inner.querySelectorAll('.pin').forEach(n => n.remove());
   for (const p of S.stops) {
     if (p.x == null || p.sheetId !== s.sheetId) continue;
     const b = document.createElement('button');
-    b.className = 'pin' + (p.issue ? ' issue' : '') + (p.id === S.selId ? ' sel' : '');
+    b.className = 'pin' + (p.issue ? ' issue' : '') + (p.id === S.selId ? ' sel' : '') + (mv && p.id === mv.id ? ' moving' : '');
     b.style.left = (p.x * 100) + '%'; b.style.top = (p.y * 100) + '%';
     b.setAttribute('aria-label', 'Stop ' + p.n + (p.issue ? ' (issue)' : ''));
     b.innerHTML = `<span>${p.n}</span><i></i>`;
-    b.onclick = (e) => { e.stopPropagation(); if (!S.armed && !justPinched()) openStop(p.id); };
+    b.onclick = (e) => { e.stopPropagation(); if (!S.armed && !S.moving && !justPinched()) openStop(p.id); };
     inner.appendChild(b);
   }
+  if (S.zoom > zMax()) applyZoom(zMax());
+  scheduleDetail();
 }
-const ZMIN = 1, ZMAX = 8;
+
+/* ---------------- sharp zoom ----------------
+   Each sheet is stored as a picture (about 4,000 px across) for the overview. Sheets loaded from a PDF also keep
+   that page as a small PDF. Zoomed in past the picture's detail, the part of the plan on screen is redrawn from
+   the PDF at screen sharpness, so room numbers and fine text stay crisp however far you zoom. */
+const DETAIL = { docs: new Map(), task: null, t: 0, gen: 0 };
+const DETAIL_MAX_PX = 6e6; // per redraw; keeps phones well inside their canvas memory limits
+function scheduleDetail() { clearTimeout(DETAIL.t); DETAIL.t = setTimeout(renderDetail, 160); }
+function dropCanvas(c) { if (!c) return; c.width = c.height = 0; c.remove(); } // frees the memory right away on iPhone
+async function sheetPdfPage(sh) {
+  let d = DETAIL.docs.get(sh.pdfId);
+  if (!d) {
+    for (const [k, v] of DETAIL.docs) { v.then(x => x.destroy()).catch(() => {}); DETAIL.docs.delete(k); } // keep one open
+    d = idb.get('blobs', sh.pdfId).then(r => { if (!r) throw new Error('missing'); return pdfjsLib.getDocument({ data: new Uint8Array(r.buf.slice(0)) }).promise; });
+    DETAIL.docs.set(sh.pdfId, d);
+    d.catch(() => DETAIL.docs.delete(sh.pdfId));
+  }
+  return (await d).getPage(sh.pdfPage || 1);
+}
+function closeDetailDocs() { for (const v of DETAIL.docs.values()) v.then(x => x.destroy()).catch(() => {}); DETAIL.docs.clear(); }
+async function renderDetail() {
+  const gen = ++DETAIL.gen;
+  const sh = S.cur && curSheet(), inner = $('mapInner'), sc = $('mapScroll');
+  const old = inner && inner.querySelector('canvas.detail');
+  if (!sh || !sh.pdfId || !inner || !sc || !window.pdfjsLib || $('mapPanel').dataset.mode !== 'map') { dropCanvas(old); return; }
+  if (old && old.dataset.sheet !== sh.id) dropCanvas(old);
+  const ir = inner.getBoundingClientRect(), sr = sc.getBoundingClientRect();
+  const iw = ir.width, ih = ir.height, dpr = Math.min(window.devicePixelRatio || 1, 3);
+  if (!iw || !ih || iw * dpr <= (sh.w || 0) * 1.05) { dropCanvas(inner.querySelector('canvas.detail')); return; } // the picture is sharp enough
+  let x0 = Math.max(0, sr.left - ir.left), y0 = Math.max(0, sr.top - ir.top);
+  let x1 = Math.min(iw, sr.right - ir.left), y1 = Math.min(ih, sr.bottom - ir.top);
+  if (x1 - x0 < 2 || y1 - y0 < 2) return;
+  // Draw a margin around the screen so small pans stay sharp, when that fits the budget
+  const mx = (x1 - x0) * 0.25, my = (y1 - y0) * 0.25;
+  const px0 = Math.max(0, x0 - mx), py0 = Math.max(0, y0 - my), px1 = Math.min(iw, x1 + mx), py1 = Math.min(ih, y1 + my);
+  if ((px1 - px0) * (py1 - py0) * dpr * dpr <= DETAIL_MAX_PX) { x0 = px0; y0 = py0; x1 = px1; y1 = py1; }
+  const area = (x1 - x0) * (y1 - y0);
+  const k = Math.min(dpr, Math.sqrt(DETAIL_MAX_PX / area));
+  const cur = inner.querySelector('canvas.detail');
+  if (cur && Math.abs(+cur.dataset.iw - iw) < 1 && +cur.dataset.x0 <= Math.max(0, sr.left - ir.left) + 1 && +cur.dataset.y0 <= Math.max(0, sr.top - ir.top) + 1 &&
+      +cur.dataset.x1 >= Math.min(iw, sr.right - ir.left) - 1 && +cur.dataset.y1 >= Math.min(ih, sr.bottom - ir.top) - 1) return; // already covers the screen
+  try {
+    const page = await sheetPdfPage(sh);
+    if (gen !== DETAIL.gen) return;
+    const v1 = page.getViewport({ scale: 1 }), vp = page.getViewport({ scale: (iw * k) / v1.width });
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round((x1 - x0) * k)); c.height = Math.max(1, Math.round((y1 - y0) * k));
+    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+    if (DETAIL.task) { try { DETAIL.task.cancel(); } catch (_) {} }
+    DETAIL.task = page.render({ canvasContext: ctx, viewport: vp, transform: [1, 0, 0, 1, -x0 * k, -y0 * k] });
+    await DETAIL.task.promise; DETAIL.task = null;
+    if (gen !== DETAIL.gen || !inner.isConnected || curSheet()?.id !== sh.id) { dropCanvas(c); return; }
+    c.className = 'detail';
+    Object.assign(c.dataset, { sheet: sh.id, iw, x0, y0, x1, y1 });
+    Object.assign(c.style, { left: (x0 / iw * 100) + '%', top: (y0 / ih * 100) + '%', width: ((x1 - x0) / iw * 100) + '%', height: ((y1 - y0) / ih * 100) + '%' });
+    const prev = inner.querySelector('canvas.detail');
+    inner.insertBefore(c, $('mapImg').nextSibling);
+    dropCanvas(prev);
+  } catch (e) {
+    if (e && e.name === 'RenderingCancelledException') return;
+    DETAIL.task = null; // anything else: stay on the picture, which is still usable
+  }
+}
+window.addEventListener('resize', scheduleDetail);
+/* Sheets that keep their PDF redraw sharp at any zoom, so they can zoom much further. */
+const ZMIN = 1, zMax = () => (curSheet()?.pdfId ? 32 : 8);
 function applyZoom(z) {
-  S.zoom = Math.max(ZMIN, Math.min(ZMAX, z));
+  S.zoom = Math.max(ZMIN, Math.min(zMax(), z));
+  scheduleDetail();
   const inner = $('mapInner'); if (inner) inner.style.width = (S.zoom * 100) + '%';
   const l = $('zLbl'); if (l) l.textContent = (Math.round(S.zoom * 10) / 10) + '×';
 }
@@ -340,14 +471,35 @@ const justPinched = () => Date.now() < (S.pinchUntil || 0);
 /* Stop Safari zooming the whole page */
 ['gesturestart', 'gesturechange', 'gestureend'].forEach(t => document.addEventListener(t, e => e.preventDefault(), { passive: false }));
 function onMapTap(e) {
-  if (!S.armed || justPinched()) return;
+  if ((!S.armed && !S.moving) || justPinched()) return;
   const r = $('mapInner').getBoundingClientRect();
   const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
   if (x < 0 || x > 1 || y < 0 || y > 1) return;
+  if (S.moving) return finishMove(+x.toFixed(4), +y.toFixed(4));
   S.armed = false;
   createStop(+x.toFixed(4), +y.toFixed(4));
 }
+/* Move pin: the stop keeps all its data; only its spot (and sheet) changes. */
+const movingStop = () => S.moving ? S.stops.find(p => p.id === S.moving) || null : null;
+function startMove() {
+  const p = sel(); if (!p || !S.cur.mapId) return;
+  flushSaves();
+  if (p.sheetId && S.cur.sheetId !== p.sheetId && sheetById(p.sheetId)) { S.cur.sheetId = p.sheetId; syncSheet(); touch(false); }
+  S.moving = p.id; S.armed = false;
+  closeSheet(); renderSurvey(); backToPlan();
+}
+async function finishMove(x, y) {
+  const p = movingStop(); S.moving = null;
+  if (!p) { renderSurvey(); return; }
+  const was = p.x == null;
+  p.x = x; p.y = y; p.sheetId = S.cur.sheetId;
+  try { await saveStop(p); await touch(); toast(`Stop ${p.n} ${was ? 'placed on the plan' : 'moved'}`); }
+  catch (e) { toast(storageMsg(e)); }
+  renderSurvey();
+}
+function cancelMove() { S.moving = null; renderSurvey(); }
 $('addBtn').onclick = () => {
+  if (S.moving) return cancelMove();
   if (S.cur.mapId) {
     S.armed = !S.armed; renderSurvey();
     if (S.armed) backToPlan();
@@ -380,6 +532,12 @@ function renderSettings(full) {
   if (full || document.activeElement !== $('setSurveyor')) $('setSurveyor').value = s.surveyor || '';
   $('setGps').checked = s.gps !== false;
   $('replaceMap').textContent = s.mapId ? 'Replace this sheet' : 'Load plan';
+  $('shareBox').hidden = !SYNC.available || !!s.readonly;
+  $('setPublic').checked = !!s.public;
+  $('keepInfo').textContent = s.remote && s.expiresAt
+    ? `Saved to your account. It will be deleted from all devices on ${fmtDate(new Date(s.expiresAt).toISOString(), false)}, ${SYNC.keepDays || 30} days after its last change, unless you change it or keep it.`
+    : 'Not uploaded to your account yet. That happens automatically when there is a signal.';
+  $('keepRow').hidden = !expSoon(s);
   $('replaceHint').hidden = !(s.mapId && S.stops.some(p => p.x != null && p.sheetId === s.sheetId));
   renderSheetSettings(full);
 }
@@ -404,7 +562,7 @@ function renderSheetSettings(full) {
     s.sheets = s.sheets.filter(x => x.id !== id);
     if (s.sheetId === id) s.sheetId = s.sheets[0]?.id || null;
     syncSheet(); await touch();
-    try { await idb.del('blobs', sh.mapId); } catch (_) {} dropURL(sh.mapId);
+    await releaseSheetBlobs(sh, s.sheets);
     $('mapPanel').dataset.mode = ''; S.sheetKey = ''; renderSurvey(true); toast('Sheet removed');
   }));
   $('setAddSheet').onclick = () => { S.fileMode = 'add'; $('mapFile').click(); };
@@ -415,21 +573,31 @@ $('setSurveyor').addEventListener('input', () => {
   survT = setTimeout(() => { S.cur.surveyor = $('setSurveyor').value.trim(); ls.set('surveyor', S.cur.surveyor); touch(); $('svSurveyor').textContent = S.cur.surveyor ? 'Surveyor: ' + S.cur.surveyor : ''; }, 500);
 });
 $('setGps').onchange = () => { S.cur.gps = $('setGps').checked; touch(); };
+$('setPublic').onchange = async () => {
+  S.cur.public = $('setPublic').checked; await touch();
+  toast(S.cur.public ? 'Public: the team will see it (read-only) once it syncs.' : 'Private: only you can see it now.', 3500);
+};
+$('keepBtn').onclick = () => keepSurvey(S.cur.id, $('keepBtn'));
 $('replaceMap').onclick = () => { S.fileMode = S.cur.mapId ? 'replace' : 'add'; $('mapFile').click(); };
-twoTap($('delSurvey'), 'Delete survey', 'Tap again to delete for good', async () => {
+/* Remove a survey and everything it uses from this device. */
+async function deleteLocal(id) {
+  const s = await idb.get('surveys', id);
+  const stops = await idb.byIndex('stops', 'surveyId', id);
+  for (const p of stops) { for (const b of (p.photos || [])) { await idb.del('blobs', b); dropURL(b); } await idb.del('stops', p.id); }
+  if (s) for (const b of new Set([s.mapId, ...(s.sheets || []).flatMap(sh => [sh.mapId, sh.pdfId])].filter(Boolean))) { await idb.del('blobs', b); dropURL(b); }
+  await idb.del('surveys', id);
+}
+async function deleteSurveyAction() {
   const s = S.cur; if (!s) return;
   try {
-    for (const p of S.stops) {
-      for (const id of (p.photos || [])) await idb.del('blobs', id);
-      await idb.del('stops', p.id);
-    }
-    for (const sh of (s.sheets || [])) await idb.del('blobs', sh.mapId);
-    if (s.mapId && !(s.sheets || []).some(sh => sh.mapId === s.mapId)) await idb.del('blobs', s.mapId);
-    await idb.del('surveys', s.id);
-    toast('Survey deleted');
+    flushSaves();
+    if (s.remote && !s.readonly) addPendingDelete(s.id);
+    await deleteLocal(s.id);
+    toast(s.readonly ? 'Removed from this device' : s.remote ? 'Survey deleted on all your devices' : 'Survey deleted');
     showList();
   } catch (e) { toast('Could not delete: ' + (e.message || e)); }
-});
+}
+twoTap($('delSurvey'), 'Delete survey', 'Tap again to delete for good', deleteSurveyAction);
 
 /* ---------------- stops ---------------- */
 async function createStop(x, y) {
@@ -449,6 +617,7 @@ async function createStop(x, y) {
   }
 }
 async function saveStop(st) {
+  if (S.cur?.readonly) return;
   try {
     await idb.put('stops', JSON.parse(JSON.stringify(st)));
     if (S.selId === st.id) $('sSaved').textContent = 'Saved on this phone';
@@ -462,17 +631,19 @@ function schedule(st) {
   pending.set(st.id, setTimeout(() => { pending.delete(st.id); saveStop(st); }, 400));
 }
 function flushSaves() {
+  const done = [];
   for (const [id, t] of pending) {
     clearTimeout(t); pending.delete(id);
-    const st = S.stops.find(p => p.id === id); if (st) saveStop(st);
+    const st = S.stops.find(p => p.id === id); if (st) done.push(saveStop(st));
   }
+  return Promise.all(done);
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSaves(); });
 window.addEventListener('pagehide', flushSaves);
 
-function openStop(id) { flushSaves(); const ps = S.stops.find(x => x.id === id); if (ps && ps.sheetId && S.cur.sheetId !== ps.sheetId && sheetById(ps.sheetId)) { S.cur.sheetId = ps.sheetId; syncSheet(); S.zoom = 1; touch(); } S.selId = id; S.armed = false; renderSurvey(); openSheet(); }
+function openStop(id) { flushSaves(); const ps = S.stops.find(x => x.id === id); if (ps && ps.sheetId && S.cur.sheetId !== ps.sheetId && sheetById(ps.sheetId)) { S.cur.sheetId = ps.sheetId; syncSheet(); S.zoom = 1; touch(false); } S.selId = id; S.armed = false; renderSurvey(); openSheet(); }
 function openSheet() { $('sheet').hidden = false; $('sheet').scrollTop = 0; document.body.classList.add('editing'); renderSheet(true); }
-function closeSheet() { flushSaves(); $('sheet').hidden = true; document.body.classList.remove('editing'); S.selId = null; setTimeout(applyUpdate, 300); }
+function closeSheet() { flushSaves(); $('sheet').hidden = true; document.body.classList.remove('editing'); S.selId = null; setTimeout(applyUpdate, 300); scheduleSync(1500); }
 $('sClose').onclick = () => { closeSheet(); renderSurvey(); backToPlan(); };
 /* After Done: show the plan (or, with no plan, the top of the survey with + New stop). */
 function backToPlan() {
@@ -504,6 +675,11 @@ function renderSheet(full) {
   $('sChips').querySelectorAll('.zchip').forEach((c, i) => (c.onclick = () => { $('sZone').value = zones[i]; setZone(zones[i]); }));
   renderGps(p);
   $('sIssue').checked = !!p.issue; $('sIssueBox').classList.toggle('on', !!p.issue);
+  $('sMove').hidden = !S.cur.mapId;
+  const ro = !!S.cur.readonly;
+  for (const id of ['sZone', 'sNote', 'sDimW', 'sDimD', 'sDimH']) $(id).readOnly = ro;
+  $('sIssue').disabled = ro; $('sChips').hidden = ro;
+  $('sMove').textContent = p.x == null ? 'Place on plan' : 'Move pin';
   if (full) { $('sStatus').textContent = ''; $('sStatus').className = 'status'; $('sSaved').textContent = ''; }
 }
 function setZone(v) { const p = sel(); if (!p) return; p.zone = v; S.lastZone = v; schedule(p); renderStops(); }
@@ -541,6 +717,7 @@ $('sIssue').onchange = async () => {
   renderMap(); renderStops(); renderIssueCount();
 };
 
+$('sMove').onclick = startMove;
 twoTap($('sDel'), 'Delete stop', 'Tap again to delete', async () => {
   const p = sel(); if (!p) return;
   try {
@@ -803,26 +980,77 @@ async function pdfSheetBlob(pdf, n) {
   if (!blob) throw new Error('The sheet could not be converted');
   return { blob, w: c.width, h: c.height };
 }
-async function addPdfPages(pdf, pages, labels, base) {
+async function addPdfPages(pdf, pages, labels, base, file) {
   const items = []; let k = 0;
   for (const n of pages) {
     k++; busy(pages.length > 1 ? `Preparing sheet ${k} of ${pages.length}…` : 'Preparing the sheet…');
     const r = await pdfSheetBlob(pdf, n);
-    items.push({ ...r, name: (labels && labels[n - 1]) || (pdf.numPages > 1 ? `Page ${n}` : base) });
+    items.push({ ...r, name: (labels && labels[n - 1]) || (pdf.numPages > 1 ? `Page ${n}` : base), page: n });
+  }
+  if (file) {
+    busy('Saving the sheets for sharp zoom…');
+    const src = await pdfDetailSources(file, pages, pdf.numPages);
+    for (const it of items) if (src[it.page]) { it.pdfBlob = src[it.page].blob; it.pdfPage = src[it.page].page; }
   }
   await applySheets(items);
+}
+/* pdf-lib (loaded only when a PDF plan is added) copies each picked page into its own small PDF.
+   If that can't be done (for example a secured plan set), the whole file is kept once and shared by its sheets. */
+let pdfLibP = null;
+const loadPdfLib = () => pdfLibP || (pdfLibP = new Promise((res, rej) => {
+  if (window.PDFLib) return res(window.PDFLib);
+  const sc = document.createElement('script'); sc.src = 'vendor/pdf-lib.min.js';
+  sc.onload = () => (window.PDFLib ? res(window.PDFLib) : rej(new Error('pdf-lib missing')));
+  sc.onerror = () => { pdfLibP = null; rej(new Error('pdf-lib did not load')); };
+  document.head.appendChild(sc);
+}));
+async function pdfDetailSources(file, pages, numPages) {
+  const out = {};
+  if (numPages === 1) { out[1] = { blob: new Blob([await file.arrayBuffer()], { type: 'application/pdf' }), page: 1 }; return out; }
+  try {
+    const L = await loadPdfLib();
+    const src = await L.PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true, updateMetadata: false });
+    if (src.isEncrypted) throw new Error('secured');
+    for (const n of pages) {
+      const d = await L.PDFDocument.create();
+      const [pg] = await d.copyPages(src, [n - 1]); d.addPage(pg);
+      out[n] = { blob: new Blob([await d.save()], { type: 'application/pdf' }), page: 1 };
+    }
+  } catch (_) {
+    const whole = new Blob([await file.arrayBuffer()], { type: 'application/pdf' });
+    for (const n of pages) out[n] = { blob: whole, page: n };
+  }
+  return out;
+}
+/* Delete a sheet's stored files unless another sheet in the survey still uses them (a shared plan-set PDF). */
+async function releaseSheetBlobs(sh, others) {
+  for (const id of [sh.mapId, sh.pdfId]) {
+    if (!id || others.some(o => o.mapId === id || o.pdfId === id)) continue;
+    try { await idb.del('blobs', id); } catch (_) {}
+    dropURL(id); DETAIL.docs.delete(id);
+  }
 }
 /* Add sheets to the survey, or replace the image of the current sheet. */
 async function applySheets(items) {
   const s = S.cur;
+  const pdfIds = new Map(); // one stored copy per PDF, even when several sheets share it
+  const setPdf = async (sh, it) => {
+    delete sh.pdfId; delete sh.pdfPage;
+    if (!it.pdfBlob) return;
+    if (!pdfIds.has(it.pdfBlob)) { let id = null; try { id = await putBlob(it.pdfBlob); } catch (_) {} pdfIds.set(it.pdfBlob, id); }
+    const id = pdfIds.get(it.pdfBlob);
+    if (id) { sh.pdfId = id; if (it.pdfPage > 1) sh.pdfPage = it.pdfPage; }
+  };
   if (S.fileMode === 'replace' && curSheet() && items.length) {
-    const sh = curSheet(), old = sh.mapId, it = items[0];
+    const sh = curSheet(), old = { mapId: sh.mapId, pdfId: sh.pdfId }, it = items[0];
     sh.mapId = await putBlob(it.blob); sh.w = it.w; sh.h = it.h;
-    try { await idb.del('blobs', old); } catch (_) {} dropURL(old);
+    await setPdf(sh, it);
+    await releaseSheetBlobs(old, s.sheets);
   } else {
     let firstId = null;
     for (const it of items) {
       const sh = { id: uid(), name: String(it.name || 'Sheet').slice(0, 40), mapId: await putBlob(it.blob), w: it.w, h: it.h };
+      await setPdf(sh, it);
       s.sheets.push(sh); firstId = firstId || sh.id;
     }
     if (firstId) s.sheetId = firstId;
@@ -832,7 +1060,7 @@ async function applySheets(items) {
   S.zoom = 1; S.fileMode = 'add'; S.sheetKey = ''; $('mapPanel').dataset.mode = ''; renderSurvey(true);
   toast(replaced ? 'Sheet replaced.' : n > 1 ? `${n} sheets added. Switch between them with the tabs above the plan.` : (s.sheets.length > 1 ? 'Sheet added.' : 'Plan loaded. Tap Drop pin to start.'), 4000);
 }
-async function pickSheets(pdf, labels) {
+async function pickSheets(pdf, labels, file) {
   const P = $('mapPanel'); P.hidden = false; P.dataset.mode = 'pick';
   const N = pdf.numPages, M = Math.min(N, 60), replace = S.fileMode === 'replace';
   P.innerHTML = `<div class="empty"><h2>${replace ? 'Pick the replacement sheet' : 'Pick the sheets'}</h2>
@@ -842,7 +1070,7 @@ async function pickSheets(pdf, labels) {
   const picked = new Set();
   $('sheetCancel').onclick = () => { P.dataset.mode = ''; S.fileMode = 'add'; renderSurvey(); };
   const go = async (pages) => {
-    try { await addPdfPages(pdf, pages, labels, 'Sheet'); }
+    try { await addPdfPages(pdf, pages, labels, 'Sheet', file); }
     catch (err) { P.dataset.mode = ''; renderSurvey(); toast('Could not use that sheet: ' + (err.message || err)); }
   };
   $('sheetAdd').onclick = () => { if (picked.size) go([...picked].sort((a, b) => a - b)); };
@@ -874,7 +1102,7 @@ $('mapFile').onchange = async e => {
       toast('Opening PDF…');
       const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(await f.arrayBuffer()) }).promise;
       let labels = null; try { labels = await pdf.getPageLabels(); } catch (_) {}
-      if (pdf.numPages === 1) await addPdfPages(pdf, [1], labels, base); else await pickSheets(pdf, labels);
+      if (pdf.numPages === 1) await addPdfPages(pdf, [1], labels, base, f); else await pickSheets(pdf, labels, f);
     } else {
       busy('Preparing the plan…');
       const r = await shrink(f, 4096, 0.88);
@@ -1209,6 +1437,8 @@ $('reportBtn').onclick = async () => {
     const date = new Date().toISOString().slice(0, 10);
     const base = (S.cur.name || 'site-walk').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-') || 'site-walk';
     readyFile = new File([blob], `${base}-site-walk-${date}.pdf`, { type: 'application/pdf' });
+    EXALL.ids = []; $('readyNext').hidden = true; $('readySave').hidden = false;
+    $('readyTitle').textContent = 'Report ready';
     const mb = blob.size / 1048576;
     $('readyInfo').textContent = `${readyFile.name} · ${mb < 1 ? Math.round(blob.size / 1024) + ' KB' : mb.toFixed(1) + ' MB'}. Share it to Mail, Teams, Files or AirDrop. If you are offline, save it now and send it later.`;
     $('readyShare').hidden = !(navigator.canShare && navigator.canShare({ files: [readyFile] }));
@@ -1216,19 +1446,411 @@ $('reportBtn').onclick = async () => {
   } catch (e) { toast('Could not build the report: ' + (e.message || e), 5000); }
   finally { btn.textContent = label; btn.disabled = !S.stops.length; }
 };
+const readyList = () => (Array.isArray(readyFile) ? readyFile : readyFile ? [readyFile] : []);
 $('readyShare').onclick = async () => {
-  if (!readyFile) return;
-  try { await navigator.share({ files: [readyFile], title: S.cur?.name || 'Site walk report' }); $('ready').hidden = true; }
-  catch (e) { if (e.name !== 'AbortError') toast('Sharing did not work here. Use Save / open instead.'); }
+  const files = readyList(); if (!files.length) return;
+  try {
+    await navigator.share({ files, title: files.length > 1 ? 'Site Walk surveys' : (S.cur?.name || 'Site walk') });
+    if (EXALL.ids.length > EXALL.i) { $('readyShare').hidden = true; $('readyInfo').textContent = 'Saved. Tap Next batch for the rest.'; }
+    else { $('ready').hidden = true; if (EXALL.ids.length) { toast('All surveys exported.', 3000); EXALL.ids = []; } }
+  } catch (e) { if (e.name !== 'AbortError') toast('Sharing did not work here. Use Save / open instead.'); }
 };
 $('readySave').onclick = () => {
-  if (!readyFile) return;
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(readyFile); a.download = readyFile.name; a.rel = 'noopener';
-  document.body.appendChild(a); a.click();
-  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 60000);
+  readyList().forEach((f, k) => setTimeout(() => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(f); a.download = f.name; a.rel = 'noopener';
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 60000);
+  }, k * 700));
 };
-$('readyClose').onclick = () => { $('ready').hidden = true; setTimeout(applyUpdate, 300); };
+$('readyClose').onclick = () => { $('ready').hidden = true; readyFile = null; EXALL.ids = []; $('readyNext').hidden = true; setTimeout(applyUpdate, 300); };
+
+/* Export all: one .sitewalk file per survey, handed over in batches (about 100 MB or 10 surveys at a time)
+   so a phone never has to hold every survey in memory at once. */
+const EXALL = { ids: [], i: 0, batch: 0 };
+const fmtSize = n => n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+async function exportAllBatch() {
+  const files = []; let size = 0; const from = EXALL.i;
+  $('readyNext').hidden = true; $('readyShare').hidden = true; $('readySave').hidden = true;
+  $('readyTitle').textContent = 'Packing surveys…'; $('ready').hidden = false;
+  while (EXALL.i < EXALL.ids.length && files.length < 10 && size < 100 * 1048576) {
+    $('readyInfo').textContent = `Packing survey ${EXALL.i + 1} of ${EXALL.ids.length}…`;
+    const f = await exportSurvey(EXALL.ids[EXALL.i]); EXALL.i++;
+    if (f) { files.push(f); size += f.size; }
+  }
+  EXALL.batch++;
+  readyFile = files;
+  const more = EXALL.i < EXALL.ids.length, total = EXALL.ids.length;
+  $('readyTitle').textContent = more || EXALL.batch > 1 ? `Survey files ready (batch ${EXALL.batch})` : 'Survey files ready';
+  $('readyInfo').textContent = `Surveys ${from + 1}–${EXALL.i} of ${total} · ${fmtSize(size)}. Tap Share… and choose Save to Files (or AirDrop). ` +
+    (more ? 'Then tap Next batch for the rest.' : 'On the other device or app, tap Import and pick all of them at once.');
+  $('readySave').hidden = false;
+  $('readyShare').hidden = !(navigator.canShare && navigator.canShare({ files }));
+  $('readyNext').hidden = !more;
+}
+$('exportAllBtn').onclick = async () => {
+  await flushSaves();
+  EXALL.ids = S.surveys.filter(s => !s.readonly).map(s => s.id); EXALL.i = 0; EXALL.batch = 0;
+  if (!EXALL.ids.length) return;
+  try { await exportAllBatch(); } catch (e) { $('ready').hidden = true; toast('Could not export: ' + (e.message || e), 5000); }
+};
+$('readyNext').onclick = async () => { try { await exportAllBatch(); } catch (e) { toast('Could not export: ' + (e.message || e), 5000); } };
+
+/* ---------------- survey files (.sitewalk): move a survey between devices ----------------
+   Layout: "SWALK1" · 4-byte little-endian header length · JSON header · raw image bytes back to back.
+   Raw bytes (no base64) keep big surveys from running a phone out of memory. */
+const SW_MAGIC = 'SWALK1';
+const SYNC_FIELDS = ['owner', 'rev', 'seq', 'syncedSeq', 'remote', 'readonly', 'expiresAt'];
+const stripSync = s => { const c = { ...s }; for (const k of SYNC_FIELDS) delete c[k]; return c; };
+async function exportSurvey(id = S.cur?.id) {
+  flushSaves();
+  const s0 = S.cur && S.cur.id === id ? S.cur : await idb.get('surveys', id); if (!s0) return;
+  const s = stripSync(s0);
+  const stops = (await idb.byIndex('stops', 'surveyId', s.id)).sort((a, b) => a.n - b.n);
+  const ids = [...new Set([s.mapId, ...(s.sheets || []).flatMap(sh => [sh.mapId, sh.pdfId]), ...stops.flatMap(p => p.photos || [])].filter(Boolean))];
+  const index = [], parts = [];
+  for (const id of ids) {
+    const r = await idb.get('blobs', id); if (!r) continue;
+    index.push({ id, type: r.type, size: r.buf.byteLength }); parts.push(r.buf);
+  }
+  const header = new TextEncoder().encode(JSON.stringify({ app: 'sitewalk', format: 1, appVersion: APP_VERSION, exportedAt: new Date().toISOString(), survey: s, stops, blobs: index }));
+  const len = new Uint8Array(4); new DataView(len.buffer).setUint32(0, header.length, true);
+  const blob = new Blob([new TextEncoder().encode(SW_MAGIC), len, header, ...parts], { type: 'application/octet-stream' });
+  const date = new Date().toISOString().slice(0, 10);
+  const base = (s.name || 'site-walk').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-') || 'site-walk';
+  return new File([blob], `${base}-${date}.sitewalk`, { type: 'application/octet-stream' });
+}
+$('exportBtn').onclick = async () => {
+  const btn = $('exportBtn'); btn.disabled = true; btn.textContent = 'Packing the survey…';
+  try {
+    readyFile = await exportSurvey(); if (!readyFile) return;
+    EXALL.ids = []; $('readyNext').hidden = true; $('readySave').hidden = false;
+    const mb = readyFile.size / 1048576;
+    $('readyTitle').textContent = 'Survey file ready';
+    $('readyInfo').textContent = `${readyFile.name} · ${mb < 1 ? Math.round(readyFile.size / 1024) + ' KB' : mb.toFixed(1) + ' MB'}. AirDrop it, save it to Files or send it by email, then open Site Walk on the other device and tap Import on the Surveys screen.`;
+    $('readyShare').hidden = !(navigator.canShare && navigator.canShare({ files: [readyFile] }));
+    $('ready').hidden = false;
+  } catch (e) { toast(storageMsg(e).replace('Could not save', 'Could not export'), 5000); }
+  finally { btn.disabled = false; btn.textContent = 'Export survey file'; }
+};
+
+function parseSurveyFile(buf) {
+  const bad = new Error('That is not a Site Walk survey file.');
+  if (buf.byteLength < 10 || new TextDecoder().decode(new Uint8Array(buf, 0, 6)) !== SW_MAGIC) throw bad;
+  const hl = new DataView(buf, 6, 4).getUint32(0, true);
+  if (10 + hl > buf.byteLength) throw bad;
+  let h; try { h = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 10, hl))); } catch (_) { throw bad; }
+  if (h.app !== 'sitewalk' || !h.survey?.id || !Array.isArray(h.stops) || !Array.isArray(h.blobs)) throw bad;
+  if (h.format > 1) throw new Error('This file came from a newer version of Site Walk. Update the app on this device (open it with a signal), then import again.');
+  return { h, start: 10 + hl };
+}
+/* mode: 'new' (not on this device yet), 'replace' (overwrite the copy here), 'copy' (keep both) */
+async function importSurvey({ h, start }, buf, mode, copySuffix = ' (copy)') {
+  const written = [], map = {};
+  let off = start;
+  try {
+    for (const b of h.blobs) {
+      if (off + b.size > buf.byteLength) throw new Error('The survey file is incomplete. Export it again.');
+      const id = uid();
+      await idb.put('blobs', { id, type: b.type || 'image/jpeg', buf: buf.slice(off, off + b.size) });
+      written.push(id); map[b.id] = id; off += b.size;
+    }
+  } catch (e) { for (const id of written) { try { await idb.del('blobs', id); } catch (_) {} } throw e; }
+  const m = id => map[id] || null;
+  const rekey = o => { const r = {}; for (const [k, v] of Object.entries(o || {})) if (map[k]) r[map[k]] = v; return r; };
+  const s = stripSync(JSON.parse(JSON.stringify(h.survey)));
+  if (mode === 'copy') { s.id = uid(); s.name = (s.name || 'Untitled survey') + copySuffix; }
+  s.sheets = (s.sheets || []).map(sh => { const r = { ...sh, mapId: m(sh.mapId) }; if (sh.pdfId && m(sh.pdfId)) r.pdfId = m(sh.pdfId); else { delete r.pdfId; delete r.pdfPage; } return r; }).filter(sh => sh.mapId);
+  if (!s.sheets.some(sh => sh.id === s.sheetId)) s.sheetId = s.sheets[0]?.id || null;
+  s.mapId = m(s.mapId); s.updatedAt = new Date().toISOString();
+  const stops = h.stops.map(p0 => {
+    const p = JSON.parse(JSON.stringify(p0));
+    if (mode === 'copy') p.id = uid();
+    p.surveyId = s.id;
+    const ph = (p.photos || []), marks = p.marks, caps = p.captions;
+    p.photos = ph.map(m).filter(Boolean);
+    if (marks) { p.marks = rekey(marks); if (!Object.keys(p.marks).length) delete p.marks; }
+    if (caps) { p.captions = rekey(caps); if (!Object.keys(p.captions).length) delete p.captions; }
+    return p;
+  });
+  // Gather what the replaced copy used, so it can be cleared once the new one is in
+  let oldStops = [], oldBlobs = [];
+  if (mode === 'replace') {
+    const old = await idb.get('surveys', s.id);
+    oldStops = await idb.byIndex('stops', 'surveyId', s.id);
+    oldBlobs = [...new Set([old?.mapId, ...((old?.sheets) || []).flatMap(sh => [sh.mapId, sh.pdfId]), ...oldStops.flatMap(p => p.photos || [])].filter(Boolean))];
+  }
+  try {
+    for (const p of stops) await idb.put('stops', p);
+    await idb.put('surveys', s);
+  } catch (e) {
+    if (mode !== 'replace') for (const p of stops) { try { await idb.del('stops', p.id); } catch (_) {} }
+    for (const id of written) { try { await idb.del('blobs', id); } catch (_) {} }
+    throw e;
+  }
+  const keep = new Set(stops.map(p => p.id));
+  for (const p of oldStops) if (!keep.has(p.id)) { try { await idb.del('stops', p.id); } catch (_) {} }
+  for (const id of oldBlobs) { try { await idb.del('blobs', id); } catch (_) {} dropURL(id); }
+  return s;
+}
+let impPending = null;
+async function runImport(mode) {
+  const job = impPending; impPending = null; $('impAsk').hidden = true;
+  if (!job) return;
+  S.importing = true; toast('Importing the survey…', 60000);
+  try {
+    const s = await importSurvey(job.parsed, job.buf, mode);
+    toast(`Imported “${s.name || 'Untitled survey'}”: ${job.parsed.h.stops.length} stops, ${job.parsed.h.stops.reduce((a, p) => a + (p.photos?.length || 0), 0)} photos.`, 4000);
+    await renderList();
+  } catch (e) { toast(storageMsg(e).replace('Could not save', 'Could not import'), 6000); }
+  finally { S.importing = false; setTimeout(applyUpdate, 300); }
+}
+$('importBtn').onclick = () => $('importFile').click();
+$('importFile').onchange = async e => {
+  const list = [...e.target.files]; e.target.value = ''; if (!list.length) return;
+  if (list.length > 1) return importMany(list);
+  const f = list[0];
+  try {
+    const buf = await f.arrayBuffer();
+    const parsed = parseSurveyFile(buf);
+    impPending = { buf, parsed };
+    const here = await idb.get('surveys', parsed.h.survey.id);
+    if (!here) return runImport('new');
+    $('impAskInfo').innerHTML = `<b>${esc(here.name || 'Untitled survey')}</b> is already here (last changed ${esc(fmtDate(here.updatedAt))}). The file was exported ${esc(fmtDate(parsed.h.exportedAt))}.<br><br><b>Replace</b> swaps this device's copy for the file. <b>Keep both</b> adds the file as a separate survey.`;
+    $('impAsk').hidden = false;
+  } catch (err) { impPending = null; toast(err.message || String(err), 5000); }
+};
+/* Several files picked at once: add each survey that isn't on this device yet; skip ones already here. */
+async function importMany(list) {
+  S.importing = true; let added = 0, skipped = 0; const bad = [];
+  try {
+    for (let k = 0; k < list.length; k++) {
+      toast(`Importing ${k + 1} of ${list.length}…`, 60000);
+      try {
+        const buf = await list[k].arrayBuffer(), parsed = parseSurveyFile(buf);
+        if (await idb.has('surveys', parsed.h.survey.id)) { skipped++; continue; }
+        await importSurvey(parsed, buf, 'new'); added++;
+      } catch (err) {
+        if (err && (err.name === 'QuotaExceededError' || /quota/i.test(err.message || ''))) { bad.push(list[k].name + ' (out of space)'); break; }
+        bad.push(list[k].name);
+      }
+    }
+    await renderList();
+    toast(`Imported ${added} survey${added === 1 ? '' : 's'}.` + (skipped ? ` ${skipped} already on this device ${skipped === 1 ? 'was' : 'were'} skipped.` : '') + (bad.length ? ` Not imported: ${bad.join(', ')}.` : ''), 7000);
+    if (added) scheduleSync(500);
+  } finally { S.importing = false; setTimeout(applyUpdate, 300); }
+}
+$('impReplace').onclick = () => runImport('replace');
+$('impCopy').onclick = () => runImport('copy');
+$('impCancel').onclick = () => { impPending = null; $('impAsk').hidden = true; setTimeout(applyUpdate, 300); };
+
+/* ---------------- sync ----------------
+   Works only when the app is hosted with its sync server (_worker.js). Elsewhere (GitHub Pages) it stays off and
+   the app is device-only, as before.
+   Each survey keeps: owner, rev (the server version this copy is based on), seq (local edit counter) and
+   syncedSeq (the seq last uploaded). A survey needs uploading while seq ≠ syncedSeq, or if it has never been
+   uploaded. Uploads say which server version they were based on; if another device got there first, nothing is
+   overwritten: this device's version is kept as a copy. */
+const SYNC = { available: null, me: ls.get('sw.me', '') || null, keepDays: 30, running: null, again: false, last: 0, state: '', team: [], t: 0 };
+try { SYNC.team = JSON.parse(ls.get('sw.team', '[]')) || []; } catch (_) {}
+if (SYNC.me) SYNC.available = true; // known from an earlier session, so the status shows even offline
+const isDirty = s => !s.readonly && (!s.remote || (s.seq || 0) !== (s.syncedSeq || 0));
+const blobIdsOf = (sv, stops) => [...new Set([sv.mapId, ...(sv.sheets || []).flatMap(sh => [sh.mapId, sh.pdfId]), ...stops.flatMap(p => p.photos || [])].filter(Boolean))];
+const pendingDeletes = () => { try { return JSON.parse(ls.get('sw.pendingDel', '[]')) || []; } catch (_) { return []; } };
+function addPendingDelete(id) { const a = pendingDeletes(); if (!a.includes(id)) a.push(id); ls.set('sw.pendingDel', JSON.stringify(a)); }
+function dropPendingDelete(id) { ls.set('sw.pendingDel', JSON.stringify(pendingDeletes().filter(x => x !== id))); }
+async function api(path, opt = {}) {
+  const r = await fetch('api/' + path, { credentials: 'include', redirect: 'manual', cache: 'no-store', ...opt });
+  if (r.type === 'opaqueredirect' || r.status === 401) { const e = new Error('Sign-in expired'); e.code = 'signin'; throw e; }
+  return r;
+}
+async function apiJSON(path, opt) {
+  const r = await api(path, opt);
+  if (!r.ok) { const e = new Error(`Server said ${r.status}`); e.status = r.status; try { e.body = await r.json(); } catch (_) {} throw e; }
+  return r.json();
+}
+/* Update stored survey fields without counting it as an edit (keeps the open copy in step). */
+async function patchSurvey(id, f) {
+  const open = S.cur && S.cur.id === id;
+  const r = open ? { ...S.cur } : await idb.get('surveys', id); if (!r) return;
+  Object.assign(r, f); await idb.put('surveys', r);
+  if (open) Object.assign(S.cur, f);
+}
+function scheduleSync(ms = 3000) {
+  if (SYNC.available === false) return;
+  clearTimeout(SYNC.t); SYNC.t = setTimeout(() => syncNow(), ms);
+}
+function signinNeeded() { SYNC.state = 'signin'; $('signinBanner').hidden = false; renderSyncLine(); }
+function syncNow() {
+  if (SYNC.running) { SYNC.again = true; return SYNC.running; }
+  SYNC.running = (async () => {
+    do { SYNC.again = false; await syncPass(); } while (SYNC.again && navigator.onLine);
+  })().finally(() => { SYNC.running = null; renderSyncLine(); });
+  renderSyncLine();
+  return SYNC.running;
+}
+async function syncPass() {
+  if (!navigator.onLine) { SYNC.state = 'offline'; return; }
+  try {
+    const r = await api('me');
+    if (r.status === 404 || !(r.headers.get('content-type') || '').includes('json')) { SYNC.available = false; SYNC.state = ''; return; }
+    if (!r.ok) {
+      let j = {}; try { j = await r.json(); } catch (_) {}
+      SYNC.available = true; SYNC.state = 'error';
+      SYNC.error = j.error === 'not-configured' ? 'Sync isn’t set up on the server yet (database or storage not connected).'
+        : j.error === 'signin-check-failed' ? 'The server couldn’t check your sign-in. Retrying soon.' : `Server problem (${r.status}). Retrying soon.`;
+      scheduleSync(60000); return;
+    }
+    const me = await r.json();
+    if (SYNC.me && SYNC.me !== me.email) SYNC.team = []; // someone else signed in on this device
+    SYNC.me = me.email; SYNC.keepDays = me.keepDays || 30; SYNC.available = true; ls.set('sw.me', SYNC.me);
+    $('signinBanner').hidden = true;
+    SYNC.state = 'syncing'; renderSyncLine();
+    let problems = 0;
+    // 1. deletions made on this device
+    for (const id of pendingDeletes()) {
+      try { await apiJSON('surveys/' + id, { method: 'DELETE' }); dropPendingDelete(id); }
+      catch (e) { if (e.code === 'signin') throw e; if (e.status === 403 || e.status === 404) dropPendingDelete(id); else problems++; }
+    }
+    // 2. upload changed surveys
+    for (const sv of await idb.all('surveys')) {
+      if (!isDirty(sv) || (sv.owner && sv.owner !== SYNC.me)) continue;
+      try { await pushSurvey(sv.id); } catch (e) { if (e.code === 'signin') throw e; problems++; }
+    }
+    // 3. bring this device up to date
+    const { surveys: remote } = await apiJSON('surveys');
+    const local = new Map((await idb.all('surveys')).map(x => [x.id, x]));
+    const gone = new Set(pendingDeletes());
+    for (const m of remote) {
+      if (gone.has(m.id)) continue;
+      const l = local.get(m.id), open = S.cur && S.cur.id === m.id;
+      try {
+        if (m.owner === SYNC.me) {
+          if (m.deleted) { if (l && !isDirty(l) && !open) await deleteLocal(m.id); continue; }
+          if ((!l || (m.rev > (l.rev || 0) && !isDirty(l))) && !open) await pullSurvey(m, false);
+          else if (l && l.remote && (l.expiresAt !== m.expiresAt || !!l.public !== m.public)) await patchSurvey(m.id, { expiresAt: m.expiresAt, public: m.public });
+        } else if (l && l.readonly && m.rev > (l.rev || 0) && !open) await pullSurvey(m, true);
+      } catch (e) { if (e.code === 'signin') throw e; problems++; }
+    }
+    // downloaded team surveys that are no longer shared
+    const visible = new Set(remote.filter(m => !m.deleted).map(m => m.id));
+    for (const l of local.values()) if (l.readonly && !visible.has(l.id) && !(S.cur && S.cur.id === l.id)) await deleteLocal(l.id);
+    SYNC.team = remote.filter(m => !m.deleted && m.public && m.owner !== SYNC.me);
+    ls.set('sw.team', JSON.stringify(SYNC.team));
+    SYNC.last = Date.now(); SYNC.state = problems ? 'error' : 'ok'; SYNC.error = problems ? 'Some surveys didn’t sync. Retrying soon.' : '';
+    if (problems) scheduleSync(60000);
+  } catch (e) {
+    if (e.code === 'signin') signinNeeded();
+    else { SYNC.state = navigator.onLine ? 'error' : 'offline'; SYNC.error = 'Couldn’t reach the server. Retrying soon.'; scheduleSync(60000); }
+  }
+  if (!$('listView').hidden) await renderList();
+  else if (S.cur) renderSettings();
+}
+async function pushSurvey(id) {
+  const open = S.cur && S.cur.id === id;
+  const sv = open ? { ...S.cur } : await idb.get('surveys', id);
+  const stops = (await idb.byIndex('stops', 'surveyId', id)).sort((a, b) => a.n - b.n);
+  const seq = sv.seq || 0;
+  const body = JSON.stringify({ baseRev: sv.rev || 0, doc: { survey: stripSync(sv), stops } });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await api('surveys/' + id, { method: 'PUT', headers: { 'content-type': 'application/json' }, body });
+    if (r.ok) {
+      const j = await r.json();
+      await patchSurvey(id, { owner: SYNC.me, rev: j.rev, syncedSeq: seq, remote: true, expiresAt: j.expiresAt });
+      return;
+    }
+    if (r.status === 412) { // upload the files the server doesn't have yet
+      const { missing } = await r.json();
+      for (const b of missing) {
+        const rec = await idb.get('blobs', b);
+        if (!rec) throw new Error('a file is missing on this device');
+        const u = await api(`files/${id}/${b}`, { method: 'PUT', headers: { 'content-type': rec.type || 'application/octet-stream' }, body: rec.buf });
+        if (!u.ok) throw new Error(`file upload failed (${u.status})`);
+      }
+      continue;
+    }
+    if (r.status === 409) { await keepConflictCopy(id, await r.json().catch(() => ({}))); return; }
+    throw new Error(`upload failed (${r.status})`);
+  }
+  throw new Error('upload did not complete');
+}
+/* Another device changed (or deleted) this survey since this device last synced: keep this device's version as a copy. */
+async function keepConflictCopy(id, info) {
+  const wasOpen = S.cur && S.cur.id === id;
+  if (wasOpen) await flushSaves();
+  const f = await exportSurvey(id), buf = await f.arrayBuffer();
+  const orig = await idb.get('surveys', id);
+  const copy = await importSurvey(parseSurveyFile(buf), buf, 'copy', ' (copy from this device)');
+  if (wasOpen) await showList();
+  if (info.deleted) await deleteLocal(id);
+  else await patchSurvey(id, { syncedSeq: orig?.seq || 0 }); // the other device's version comes down next
+  SYNC.again = true;
+  toast(`“${orig?.name || 'Survey'}” was ${info.deleted ? 'deleted' : 'also changed'} on another device. This device’s version was saved as “${copy.name}”.`, 7000);
+  if (wasOpen) openSurvey(copy.id);
+}
+async function pullSurvey(m, readonly) {
+  const { meta, doc } = await apiJSON('surveys/' + m.id);
+  const ids = blobIdsOf(doc.survey, doc.stops);
+  for (const b of ids) {
+    if (await idb.has('blobs', b)) continue;
+    const r = await api(`files/${m.id}/${b}`);
+    if (!r.ok) throw new Error(`a file could not be downloaded (${r.status})`);
+    await idb.put('blobs', { id: b, type: r.headers.get('content-type') || 'application/octet-stream', buf: await r.arrayBuffer() });
+  }
+  const local = await idb.get('surveys', m.id);
+  const oldStops = await idb.byIndex('stops', 'surveyId', m.id);
+  const oldIds = local ? blobIdsOf(local, oldStops) : [];
+  for (const p of doc.stops) await idb.put('stops', { ...p, surveyId: m.id });
+  const keepStops = new Set(doc.stops.map(p => p.id));
+  for (const p of oldStops) if (!keepStops.has(p.id)) await idb.del('stops', p.id);
+  const seq = local?.seq || 0;
+  const sv = { ...doc.survey, id: m.id, owner: meta.owner, rev: meta.rev, remote: true, readonly: !!readonly, public: meta.public, expiresAt: meta.expiresAt, seq, syncedSeq: seq,
+    updatedAt: new Date(meta.updatedAt).toISOString() };
+  if (local && local.sheetId && (sv.sheets || []).some(sh => sh.id === local.sheetId)) sv.sheetId = local.sheetId;
+  const sh = (sv.sheets || []).find(x => x.id === sv.sheetId) || (sv.sheets || [])[0];
+  if (sh) { sv.sheetId = sh.id; sv.mapId = sh.mapId; sv.mapW = sh.w; sv.mapH = sh.h; }
+  await idb.put('surveys', sv);
+  const keep = new Set(ids);
+  for (const b of oldIds) if (!keep.has(b)) { try { await idb.del('blobs', b); } catch (_) {} dropURL(b); }
+}
+async function keepSurvey(id, btn) {
+  if (!navigator.onLine) return toast('Connect to the internet to keep it.', 3000);
+  if (btn) btn.disabled = true;
+  try {
+    const j = await apiJSON(`surveys/${id}/keep`, { method: 'POST' });
+    await patchSurvey(id, { expiresAt: j.expiresAt });
+    toast(`Kept until ${fmtDate(new Date(j.expiresAt).toISOString(), false)}.`);
+  } catch (e) {
+    if (e.code === 'signin') signinNeeded();
+    else if (e.status === 404) { toast('It hasn’t synced yet. It will be kept automatically when it does.', 4000); scheduleSync(200); }
+    else toast('Could not keep it: ' + (e.message || e), 4000);
+  }
+  if (btn) btn.disabled = false;
+  if (!$('listView').hidden) renderList(); else if (S.cur) renderSettings();
+}
+function renderSyncLine() {
+  const line = $('syncLine'); if (!line) return;
+  if (!SYNC.available) { line.hidden = true; $('listSub').textContent = 'Saved on this phone. Works without a signal.'; return; }
+  line.hidden = false;
+  $('listSub').textContent = 'Saved on this device and synced to your account.';
+  const waiting = (S.surveys || []).filter(isDirty).length + pendingDeletes().length;
+  const who = SYNC.me ? ` · ${SYNC.me}` : '';
+  let t;
+  if (SYNC.running && SYNC.state !== 'signin') t = 'Syncing…';
+  else if (SYNC.state === 'signin') t = 'Sign in to sync.';
+  else if (!navigator.onLine || SYNC.state === 'offline') t = waiting ? `Offline · ${waiting} change${waiting === 1 ? '' : 's'} waiting` : 'Offline · all changes saved here';
+  else if (SYNC.state === 'error') t = SYNC.error || 'Couldn’t sync.';
+  else if (waiting) t = `${waiting} change${waiting === 1 ? '' : 's'} waiting to sync`;
+  else if (SYNC.last) t = `Synced ${new Date(SYNC.last).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+  else t = 'Ready to sync';
+  $('syncText').textContent = t + who;
+  line.classList.toggle('err', SYNC.state === 'error' || SYNC.state === 'signin');
+  $('syncNowBtn').hidden = !!SYNC.running || !navigator.onLine;
+}
+$('syncNowBtn').onclick = () => syncNow();
+window.addEventListener('online', () => scheduleSync(500));
+window.addEventListener('offline', renderSyncLine);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') scheduleSync(800); });
 
 /* ---------------- connectivity, install, offline ---------------- */
 let swReady = false;
@@ -1256,10 +1878,23 @@ window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); deferr
 $('installGo').onclick = async () => { if (!deferredPrompt) return; deferredPrompt.prompt(); await deferredPrompt.userChoice.catch(() => {}); deferredPrompt = null; $('installBanner').hidden = true; };
 $('installX').onclick = () => { ls.set('installDismissed', '1'); $('installBanner').hidden = true; };
 
+/* Team sign-in (when the app is hosted behind a sign-in such as Cloudflare Access).
+   The app opens from the phone's cache, so an expired sign-in never shows by itself; it only blocks updates.
+   A request that gets redirected means the sign-in has expired; offer a button to sign in again. */
+async function checkSignin() {
+  try {
+    const r = await fetch('sw.js?signin-check=' + Date.now(), { cache: 'no-store', redirect: 'manual', credentials: 'include' });
+    $('signinBanner').hidden = !(r.type === 'opaqueredirect' || r.status === 401 || r.status === 403);
+  } catch (_) { /* offline or blocked: leave it */ }
+}
+$('signinGo').onclick = () => { flushSaves(); location.href = './?signin=' + Date.now(); };
+/* After signing in, drop the ?signin marker from the address */
+if (/[?&]signin=/.test(location.search)) history.replaceState(null, '', location.pathname);
+
 /* Updates: check for a new version on launch and every time the app comes back to the foreground
    (home-screen apps on iPhone usually resume rather than restart). When a new version takes over,
    reload into it right away, or as soon as the open stop / photo / report window is closed. */
-const busyEditing = () => !$('sheet').hidden || !$('lb').hidden || !$('ready').hidden || $('mapPanel').dataset.mode === 'pick' || $('mapPanel').dataset.mode === 'busy';
+const busyEditing = () => !!S.moving || !$('sheet').hidden || !$('lb').hidden || !$('ready').hidden || !$('impAsk').hidden || S.importing || $('mapPanel').dataset.mode === 'pick' || $('mapPanel').dataset.mode === 'busy';
 function applyUpdate() {
   if (!S.pendingReload) return;
   if (busyEditing()) return;
@@ -1270,7 +1905,7 @@ function applyUpdate() {
 if ('serviceWorker' in navigator) {
   const hadController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register('sw.js').then(reg => {
-    const check = () => { if (navigator.onLine) reg.update().catch(() => {}); };
+    const check = () => { if (navigator.onLine) { reg.update().catch(() => {}); checkSignin(); } };
     check();
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
     window.addEventListener('online', check);
@@ -1288,6 +1923,6 @@ if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
 
 /* ---------------- boot ---------------- */
 renderNet(); renderInstall();
-openDB().then(renderList).catch(e => {
+openDB().then(renderList).then(() => scheduleSync(300)).catch(e => {
   $('surveyList').innerHTML = `<div class="emptycard"><h3>Storage is not available</h3><p>This browser is blocking on-device storage (${esc(e && e.message || e)}). On iPhone, open the app from the Home Screen or a normal Safari tab, not a private tab.</p></div>`;
 });

@@ -10,7 +10,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="apple-mobile-web-app-title" content="Site Walk">
-<link rel="manifest" href="manifest.webmanifest">
+<link rel="manifest" href="manifest.webmanifest" crossorigin="use-credentials">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
 <style>
@@ -63,6 +63,23 @@ button{cursor:pointer;-webkit-tap-highlight-color:transparent}
 .banner{background:var(--accent-soft);border:1px solid var(--accent);border-radius:8px;padding:12px 14px;font-size:14px;display:flex;gap:10px;align-items:flex-start}
 .banner p{margin:0;flex:1;min-width:0}
 .banner button{background:none;border:0;font-weight:700;color:var(--muted);padding:2px 4px}
+.banner.warn{background:var(--issue-soft);border-color:var(--issue);flex-direction:column;gap:8px}
+.banner.warn b.t{color:var(--issue)}
+.banner .xrow{display:flex;align-items:center;gap:10px;width:100%}
+.banner .xrow span{flex:1;min-width:0;overflow-wrap:anywhere}
+.banner .xrow .btn{min-height:38px;padding:0 12px;font-size:14px;color:var(--ink);background:var(--surface);border:1.5px solid var(--line)}
+.syncline{margin:-8px 0 0;font-size:13px;color:var(--muted)}
+.syncline button{background:none;border:0;padding:4px 2px;color:var(--ink);font-weight:700;text-decoration:underline;font-size:13px}
+.syncline.err{color:var(--danger)}
+.scard .badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.badge{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:2px 8px;border-radius:999px;background:var(--bg);border:1px solid var(--line);color:var(--muted)}
+.badge.pub{background:var(--accent-soft);border-color:var(--accent);color:var(--ink)}
+.badge.exp{background:var(--issue-soft);border-color:var(--issue);color:var(--issue)}
+.badge.wait{border-style:dashed}
+.shareBox{display:flex;flex-direction:column;gap:8px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+.ownerOnly{display:flex;flex-direction:column;gap:12px}
+body.ro #actionBar,body.ro #addSheetBtn,body.ro #sCam,body.ro #sLib,body.ro #sMove,body.ro #sDel,body.ro #lbArrow,body.ro #lbUndo,body.ro #lbDel,body.ro .ownerOnly,body.ro #shareBox{display:none!important}
+body.ro{padding-bottom:calc(24px + env(safe-area-inset-bottom,0px))}
 
 h1.pg{font-size:26px;margin:0;line-height:1.15;text-wrap:balance}
 .sub{color:var(--muted);font-size:14px;margin:0}
@@ -106,6 +123,10 @@ textarea.field{min-height:110px;resize:vertical}
 .pin i{width:2px;height:10px;background:#000}
 .pin.issue span{background:#e5372b;color:#fff}
 .pin.sel span{background:#000;color:var(--accent);transform:scale(1.15)}
+.mapinner.armed .pin{pointer-events:none}
+.mapinner canvas.detail{position:absolute;pointer-events:none;display:block}
+.pin.moving{opacity:.45}
+.pin.moving span{border-style:dashed}
 
 .empty{padding:22px 18px;display:flex;flex-direction:column;gap:14px;align-items:flex-start}
 .empty h2{font-size:20px;margin:0}
@@ -259,14 +280,17 @@ body.editing{overflow:hidden}
     <span class="chip" id="netChip">Checking…</span>
   </div></header>
   <main class="wrap">
+    <div class="banner" id="signinBanner" hidden><p>Your team sign-in has expired, so this device can't sync or get app updates. Surveys still work and are saved here.</p><button id="signinGo" class="btn primary">Sign in</button></div>
     <div class="banner" id="installBanner" hidden><p id="installText"></p><button id="installGo" class="btn primary" hidden>Install</button><button id="installX" aria-label="Dismiss">✕</button></div>
     <div class="row">
       <div style="min-width:0;flex:1">
         <h1 class="pg">Surveys</h1>
-        <p class="sub">Saved on this phone. Works without a signal.</p>
+        <p class="sub" id="listSub">Saved on this phone. Works without a signal.</p>
       </div>
+      <button class="btn" id="importBtn">Import</button>
       <button class="btn primary" id="newBtn">+ New survey</button>
     </div>
+    <p class="syncline" id="syncLine" hidden><span id="syncText"></span> <button type="button" id="syncNowBtn">Sync now</button></p>
     <form class="form" id="newForm" hidden autocomplete="off">
       <label class="fl">Site / project name
         <input class="field" id="nsName" maxlength="90" placeholder="e.g. Zoo — Savanna exhibit" required>
@@ -280,7 +304,12 @@ body.editing{overflow:hidden}
       </div>
       <div class="row"><button class="btn primary" type="submit">Create survey</button><button class="btn" type="button" id="nsCancel">Cancel</button></div>
     </form>
+    <div class="banner warn" id="expiryBanner" hidden></div>
+    <h2 class="sec" id="mineHead" hidden>My surveys</h2>
     <div class="slist" id="surveyList"></div>
+    <h2 class="sec" id="teamHead" hidden>Team surveys <span style="font-weight:400;letter-spacing:0;text-transform:none">shared read-only</span></h2>
+    <div class="slist" id="teamList"></div>
+    <div class="row"><button class="btn" id="exportAllBtn" hidden>Export all surveys</button></div>
     <div class="foot" id="storageInfo"></div>
   </main>
 </div>
@@ -293,6 +322,7 @@ body.editing{overflow:hidden}
   </div></header>
   <main class="wrap survey" id="surveyMain">
     <div class="shead"><div class="stitle">
+      <div class="banner" id="roBanner" hidden></div>
       <input id="svName" aria-label="Survey name" maxlength="90" placeholder="Name this survey">
       <div class="meta"><span><b id="cStops">0</b> stops</span><span><b id="cPhotos">0</b> photos</span><span id="cIssuesWrap" hidden><b id="cIssues" style="color:var(--issue)">0</b><span id="cIssuesLbl"> issues</span></span><span id="svSurveyor"></span></div>
     </div>
@@ -310,6 +340,12 @@ body.editing{overflow:hidden}
     <details class="settings" id="settings">
       <summary>Survey settings</summary>
       <div class="in">
+        <div class="shareBox" id="shareBox" hidden>
+          <label class="check"><input type="checkbox" id="setPublic"> <span><b>Public</b> · everyone on the team can view this survey (read-only)</span></label>
+          <p class="sub" id="keepInfo"></p>
+          <div class="row" id="keepRow" hidden><button class="btn" id="keepBtn">Keep 30 more days</button></div>
+        </div>
+        <div class="ownerOnly">
         <label class="fl">Surveyor
           <input class="field" id="setSurveyor" maxlength="60" placeholder="Your name">
         </label>
@@ -317,14 +353,18 @@ body.editing{overflow:hidden}
         <div class="shset" id="sheetSettings" hidden></div>
         <div class="row"><button class="btn" id="replaceMap">Replace this sheet</button></div>
         <p class="sub" id="replaceHint">Pins keep their position on screen, so only replace a sheet with a cleaner copy of the same drawing.</p>
+        </div>
+        <div class="row"><button class="btn" id="exportBtn">Export survey file</button></div>
+        <p class="sub">Saves the whole survey (plan sheets, stops, photos, arrows and notes) as one <b>.sitewalk</b> file. To move it to another phone or iPad, send the file over, then tap <b>Import</b> on that device's Surveys screen.</p>
         <div class="row"><button class="btn danger" id="delSurvey">Delete survey</button></div>
-        <p class="sub">Deleting removes the plan, stops and photos from this phone for good. Build and share the report first.</p>
+        <p class="sub" id="delHint">Deleting removes the plan, stops and photos from this phone for good. Build and share the report first.</p>
       </div>
     </details>
     </div>
   </main>
 </div>
 
+<input type="file" id="importFile" multiple hidden>
 <input type="file" id="mapFile" accept="image/*,application/pdf,.pdf" hidden>
 <input type="file" id="camFile" accept="image/*" capture="environment" hidden>
 <input type="file" id="libFile" accept="image/*" multiple hidden>
@@ -360,8 +400,9 @@ body.editing{overflow:hidden}
       <textarea class="field" id="sNote" placeholder="Conditions, power, conduit, mounting, sightlines, distances…"></textarea>
     </label>
     <div class="gps" id="sGps"></div>
+    <span class="saved" id="sSaved"></span>
     <div class="row">
-      <span class="saved" id="sSaved"></span>
+      <button class="btn" id="sMove" hidden>Move pin</button>
       <span class="spacer"></span>
       <button class="btn danger" id="sDel">Delete stop</button>
     </div>
@@ -380,13 +421,27 @@ body.editing{overflow:hidden}
 
 <div class="modal" id="ready" hidden role="dialog" aria-label="Report ready">
   <div class="card">
-    <h3>Report ready</h3>
+    <h3 id="readyTitle">Report ready</h3>
     <p id="readyInfo"></p>
     <div class="row">
       <button class="btn primary" id="readyShare">Share…</button>
       <button class="btn" id="readySave">Save / open</button>
+      <button class="btn" id="readyNext" hidden>Next batch</button>
       <span class="spacer"></span>
       <button class="btn" id="readyClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="impAsk" hidden role="dialog" aria-label="Survey already on this device">
+  <div class="card">
+    <h3>Already on this device</h3>
+    <p id="impAskInfo"></p>
+    <div class="row">
+      <button class="btn primary" id="impReplace">Replace</button>
+      <button class="btn" id="impCopy">Keep both</button>
+      <span class="spacer"></span>
+      <button class="btn" id="impCancel">Cancel</button>
     </div>
   </div>
 </div>
